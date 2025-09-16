@@ -1,0 +1,34 @@
+# --- Python / Build ---
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+
+# --- Entornos virtuales ---
+.venv/
+venv/
+env/
+
+# --- IDE/OS ---
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# --- Django ---
+*.log
+local_settings.py
+db.sqlite3
+*.sqlite3
+media/
+staticfiles/      # carpeta de collectstatic en despliegue
+.static/          # variantes
+
+# --- Variables de entorno ---
+.env
+.env.*
