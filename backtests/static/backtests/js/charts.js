@@ -6,7 +6,6 @@
       ? [{ pattern: 'day of week', bounds: [6, 1] }, { pattern: 'hour', bounds: rbHours }]
       : [{ pattern: 'day of week', bounds: [6, 1] }];
 
-    // Sombreado de pre/after si viene en payload.ext
     const shapes = [];
     if (isIntraday && payload && payload.ext) {
       payload.ext.forEach(w => {

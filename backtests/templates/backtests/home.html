@@ -50,6 +50,7 @@
     </div>
   </article>
 
+  <!-- ====== Órdenes rápidas + parámetros de simulación ====== -->
   <article class="bt-ops">
     <div>
       <div class="row">
@@ -64,19 +65,54 @@
           <span>Cantidad</span>
           <input type="number" id="qty" value="0" step="1" min="-999" max="999" style="width:100px;">
         </label>
-        <button id="btnBuy">Comprar</button>
-        <button id="btnSell">Vender</button>
+        <button id="btnBuy">Comprar (Market)</button>
+        <button id="btnSell">Vender (Market)</button>
         <button id="btnFlat" class="secondary">Cerrar</button>
       </div>
       <small class="muted">Nota: para opciones se usa multiplicador 100 por contrato.</small>
     </div>
+
     <div class="ops-right">
       <div>Posición: <strong id="pos-side">Flat</strong> | Qty: <strong id="pos-qty">0</strong> | Entrada: <strong id="pos-entry">—</strong></div>
       <div>MTM actual: <strong id="pos-mtm">0.00</strong></div>
+      <div class="row" style="margin-top:.35rem;">
+        <label><span>Slippage (bps)</span><input id="slip-bps" type="number" value="0" step="1" min="0" style="width:100px;"></label>
+        <label><span>Comisión fija (por orden)</span><input id="comm-fixed" type="number" value="0" step="0.01" min="0" style="width:130px;"></label>
+        <label><span>Comisión por unidad</span><input id="comm-perunit" type="number" value="0" step="0.01" min="0" style="width:130px;"></label>
+      </div>
     </div>
   </article>
 
-  <!-- ====== Gráficos: rejilla 2x2 + cadena a la derecha ====== -->
+  <!-- ====== Entrada de órdenes avanzadas ====== -->
+  <article class="section-card">
+    <div class="row" style="align-items:end;">
+      <label>
+        <span>Tipo de orden</span>
+        <select id="ord-type">
+          <option value="MKT">Market</option>
+          <option value="LMT">Limit</option>
+          <option value="STP">Stop</option>
+        </select>
+      </label>
+      <label>
+        <span>Precio (si aplica)</span>
+        <input type="number" id="ord-price" step="0.01" placeholder="0.00" style="width:140px;">
+      </label>
+      <label>
+        <span>TIF</span>
+        <select id="ord-tif">
+          <option value="DAY">DAY</option>
+          <option value="GTC">GTC</option>
+        </select>
+      </label>
+
+      <button id="btnPlaceBuy">Colocar Buy</button>
+      <button id="btnPlaceSell">Colocar Sell</button>
+      <button id="btnCancelAll" class="secondary">Cancelar todas</button>
+    </div>
+  </article>
+
+  <!-- ====== Gráficos + Cadena ====== -->
   <article class="layout">
     <!-- Izquierda: 4 gráficos (el último reservado para opción) -->
     <div>
@@ -131,7 +167,47 @@
     </aside>
   </article>
 
-  <!-- ====== Contexto JSON para JS (modular) ====== -->
+  <!-- ====== Órdenes abiertas ====== -->
+  <article class="section-card">
+    <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;">
+      <strong>Órdenes</strong>
+      <div>
+        <button id="btnExportOrders" class="secondary">Exportar órdenes CSV</button>
+      </div>
+    </header>
+    <div class="table-wrap">
+      <table>
+        <thead>
+        <tr>
+          <th>ID</th><th>TS</th><th>Side</th><th>Tipo</th><th>Precio</th><th>Qty</th><th>Activo</th><th>Estado</th><th>Fill TS</th><th>Fill Px</th><th>Acción</th>
+        </tr>
+        </thead>
+        <tbody id="orders-body"></tbody>
+      </table>
+    </div>
+  </article>
+
+  <!-- ====== Trades cerrados ====== -->
+  <article class="section-card">
+    <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;">
+      <strong>Trades</strong>
+      <div>
+        <button id="btnExportTrades" class="secondary">Exportar trades CSV</button>
+      </div>
+    </header>
+    <div class="table-wrap">
+      <table>
+        <thead>
+        <tr>
+          <th>ID</th><th>Side</th><th>Qty</th><th>Entrada TS</th><th>Entrada Px</th><th>Salida TS</th><th>Salida Px</th><th>P&amp;L</th>
+        </tr>
+        </thead>
+        <tbody id="trades-body"></tbody>
+      </table>
+    </div>
+  </article>
+
+  <!-- ====== Contexto JSON para JS ====== -->
   {{ bt_context|json_script:"bt-context" }}
 
   {% endif %}
