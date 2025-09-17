@@ -1,34 +1,24 @@
-# --- Python / Build ---
+# Python
 __pycache__/
 *.py[cod]
-*.so
-*.egg
 *.egg-info/
+*.egg
 dist/
 build/
-pip-wheel-metadata/
 
-# --- Entornos virtuales ---
+# Django
+db.sqlite3
+media/
+staticfiles/
+
+# Entorno
+.env
 .venv/
 venv/
-env/
 
-# --- IDE/OS ---
+# VSCode
 .vscode/
-.idea/
-*.iml
+
+# Sistema
 .DS_Store
 Thumbs.db
-
-# --- Django ---
-*.log
-local_settings.py
-db.sqlite3
-*.sqlite3
-media/
-staticfiles/      # carpeta de collectstatic en despliegue
-.static/          # variantes
-
-# --- Variables de entorno ---
-.env
-.env.*

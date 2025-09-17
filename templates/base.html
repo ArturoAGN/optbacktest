@@ -1,22 +1,27 @@
+{% load static %}
 <!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
   <title>{% block title %}OptBacktest{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Aquí luego inyectaremos Plotly/Charting sólo cuando haga falta -->
+
+  <!-- CSS de terceros -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <style>
-    .container { max-width: 1100px; margin: 2rem auto; }
-  </style>
+
+  <!-- CSS propio (modular) -->
+  <link rel="stylesheet" href="{% static 'backtests/css/app.css' %}">
+
+  <!-- Plotly (gráficos) -->
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
 <body>
   <main class="container">
-    <header>
-      <h1>Plataforma de Backtesting de Opciones</h1>
-      <p style="margin-top:-0.6rem;">Arquitectura modular, sin drama.</p>
-    </header>
     {% block content %}{% endblock %}
   </main>
+
+  <!-- JS propio (modular) -->
+  <script src="{% static 'backtests/js/charts.js' %}"></script>
+  <script src="{% static 'backtests/js/backtest.js' %}"></script>
 </body>
 </html>
