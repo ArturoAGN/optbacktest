@@ -1,4 +1,3 @@
-{% load static %}
 {% extends "base.html" %}
 {% block title %}OptBacktest{% endblock %}
 
@@ -132,7 +131,7 @@
     </aside>
   </article>
 
-  <!-- ====== Contexto JSON para JS (sin lógica embebida) ====== -->
+  <!-- ====== Contexto JSON para JS (modular) ====== -->
   {{ bt_context|json_script:"bt-context" }}
 
   {% endif %}
