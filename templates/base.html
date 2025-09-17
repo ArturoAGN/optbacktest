@@ -1,6 +1,6 @@
 {% load static %}
 <!doctype html>
-<html lang="es">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <title>{% block title %}OptBacktest{% endblock %}</title>
@@ -9,18 +9,20 @@
   <!-- CSS de terceros -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
-  <!-- CSS propio (modular) -->
+  <!-- CSS propio -->
   <link rel="stylesheet" href="{% static 'backtests/css/app.css' %}">
 
   <!-- Plotly (gráficos) -->
   <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
 <body>
+  <!-- Topbar eliminado; Dark Mode por defecto vía data-theme="dark" -->
+
   <main class="container">
     {% block content %}{% endblock %}
   </main>
 
-  <!-- JS propio (modular) -->
+  <!-- Solo los JS necesarios (sin theme.js) -->
   <script src="{% static 'backtests/js/charts.js' %}"></script>
   <script src="{% static 'backtests/js/backtest.js' %}"></script>
 </body>

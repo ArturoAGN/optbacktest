@@ -8,111 +8,166 @@
     {% endfor %}
   {% endif %}
 
-  <!-- ====== Filtro compacto ====== -->
-  <article class="form-card">
-    <form method="get">
-      <div class="form-row">
-        <label><span>Ticker</span>{{ form.ticker }}</label>
-        <label><span>Desde</span>{{ form.start_date }}</label>
-        <label><span>Hasta</span>{{ form.end_date }}</label>
-        <button type="submit" class="btn-compact">Consultar</button>
+  <!-- ====== CONTENEDOR ÚNICO (3 columnas: Izq[Filtro+Controles] | Centro[Órdenes rápidas] | Der[Tabs Órdenes/Trades]) ====== -->
+  <article class="combo-card">
+    <div class="combo-grid combo-grid--3">
+      <!-- ================= Col 1: Izquierda ================= -->
+      <div class="col-left stack">
+        <!-- Filtro -->
+        <section class="tool">
+          <header class="section-head">
+            <div class="section-title">Filtro: Ticker &amp; Rango</div>
+          </header>
+          <form method="get">
+            <div class="form-row">
+              <label><span>Ticker</span>{{ form.ticker }}</label>
+              <label><span>Desde</span>{{ form.start_date }}</label>
+              <label><span>Hasta</span>{{ form.end_date }}</label>
+              <button type="submit" class="btn-compact">Consultar</button>
+            </div>
+          </form>
+        </section>
+
+        <!-- Controles -->
+        <section class="tool">
+          <header class="section-head">
+            <div class="section-title">Controles de Backtest &amp; Estado</div>
+          </header>
+
+          <div class="bt-controls">
+            <button id="btnStart" title="Ir al inicio">⏮ Inicio</button>
+            <button id="btnBack"  title="Retroceder 1 paso">⏪ -10m</button>
+            <button id="btnPlay"  title="Reproducir">▶ Play</button>
+            <button id="btnPause" title="Pausar" disabled>⏸ Pausa</button>
+            <button id="btnFwd"   title="Avanzar 1 paso">⏩ +10m</button>
+            <button id="btnReset" class="secondary" title="Reset de backtest (borra posiciones/órdenes)">🔁 Reset</button>
+
+            <label style="margin-left:.5rem;">
+              <span class="lbl">Velocidad</span>
+              <select id="speed">
+                <option value="0.5">0.5×</option>
+                <option value="1" selected>1×</option>
+                <option value="2">2×</option>
+                <option value="4">4×</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="bt-status bt-status--compact">
+            <span class="pill">TZ: {{ display_tz_name }}</span>
+            <span>t=<strong id="bt-ts">—</strong></span>
+            <span>Subyacente=<strong id="bt-px">—</strong></span>
+            <span>Opción=<strong id="bt-opt">—</strong></span>
+            <span>P&amp;L=<strong id="bt-pnl" class="">0.00</strong></span>
+          </div>
+        </section>
       </div>
-    </form>
+
+      <!-- ================= Col 2: Centro ================= -->
+      <div class="col-mid">
+        <section class="tool">
+          <header class="section-head">
+            <div class="section-title">Órdenes rápidas &amp; Parámetros</div>
+          </header>
+
+          <div class="row">
+            <label>
+              <span>Activo</span>
+              <select id="px-source">
+                <option value="under">Subyacente</option>
+                {% if chart_opt %}<option value="option">Opción</option>{% endif %}
+              </select>
+            </label>
+            <label>
+              <span>Cantidad</span>
+              <input type="number" id="qty" value="0" step="1" min="-999" max="999" style="width:90px;">
+            </label>
+            <button id="btnBuy">Comprar (MKT)</button>
+            <button id="btnSell">Vender (MKT)</button>
+            <button id="btnFlat" class="secondary">Cerrar</button>
+          </div>
+          <small class="muted">Nota: para opciones se usa multiplicador 100 por contrato.</small>
+
+          <div class="ops-right" style="margin-top:.35rem;">
+            <div>Posición: <strong id="pos-side">Flat</strong> | Qty: <strong id="pos-qty">0</strong> | Entrada: <strong id="pos-entry">—</strong></div>
+            <div>MTM actual: <strong id="pos-mtm">0.00</strong></div>
+            <div class="row" style="margin-top:.35rem;">
+              <label><span>Slippage (bps)</span><input id="slip-bps" type="number" value="0" step="1" min="0" style="width:90px;"></label>
+              <label><span>Comisión fija</span><input id="comm-fixed" type="number" value="0" step="0.01" min="0" style="width:110px;"></label>
+              <label><span>Comisión por unidad</span><input id="comm-perunit" type="number" value="0" step="0.01" min="0" style="width:130px;"></label>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================= Col 3: Derecha (Tabs Órdenes/Trades) ================= -->
+      <div class="col-right">
+        <section class="tool tabs-tool">
+          <header class="section-head">
+            <div class="section-title">Órdenes / Trades</div>
+            <div class="section-actions">
+              <button id="btnExportOrders" class="secondary btn-xs">Exportar Órdenes</button>
+              <button id="btnExportTrades" class="secondary btn-xs">Exportar Trades</button>
+            </div>
+          </header>
+
+          <nav class="tabbar" role="tablist" aria-label="Ordenes y Trades">
+            <button id="tab-orders" class="tab-btn active" role="tab" aria-selected="true" aria-controls="panel-orders">Órdenes</button>
+            <button id="tab-trades" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-trades">Trades</button>
+          </nav>
+
+          <div class="tab-panels">
+            <div id="panel-orders" class="tab-panel active" role="tabpanel" aria-labelledby="tab-orders">
+              <div class="table-scroller">
+                <table>
+                  <thead>
+                  <tr>
+                    <th>ID</th><th>TS</th><th>Side</th><th>Tipo</th><th>Precio</th><th>Qty</th><th>Activo</th><th>Estado</th><th>Fill TS</th><th>Fill Px</th><th>Acción</th>
+                  </tr>
+                  </thead>
+                  <tbody id="orders-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div id="panel-trades" class="tab-panel" role="tabpanel" aria-labelledby="tab-trades">
+              <div class="table-scroller">
+                <table>
+                  <thead>
+                  <tr>
+                    <th>ID</th><th>Side</th><th>Qty</th><th>Entrada TS</th><th>Entrada Px</th><th>Salida TS</th><th>Salida Px</th><th>P&amp;L</th>
+                  </tr>
+                  </thead>
+                  <tbody id="trades-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
   </article>
 
   {% if chart_10m or chart_30m or chart_1d %}
-
-  <!-- ====== Toolbar de Backtesting + Panel P&L ====== -->
-  <article class="bt-toolbar">
-    <div class="bt-controls">
-      <button id="btnStart" title="Ir al inicio">⏮ Inicio</button>
-      <button id="btnBack"  title="Retroceder 1 paso">⏪ -10m</button>
-      <button id="btnPlay"  title="Reproducir">▶ Play</button>
-      <button id="btnPause" title="Pausar" disabled>⏸ Pausa</button>
-      <button id="btnFwd"   title="Avanzar 1 paso">⏩ +10m</button>
-      <button id="btnReset" class="secondary" title="Reset de backtest (borra posiciones/órdenes/equity)">🔁 Reset</button>
-
-      <label style="margin-left:.5rem;">
-        <span class="lbl">Velocidad</span>
-        <select id="speed">
-          <option value="0.5">0.5×</option>
-          <option value="1" selected>1×</option>
-          <option value="2">2×</option>
-          <option value="4">4×</option>
-        </select>
-      </label>
-    </div>
-
-    <div class="bt-status">
-      <span class="pill">TZ: {{ display_tz_name }}</span>
-      <span>t=<strong id="bt-ts">—</strong></span>
-      <span>Subyacente=<strong id="bt-px">—</strong></span>
-      <span>Opción=<strong id="bt-opt">—</strong></span>
-      <span>P&amp;L=<strong id="bt-pnl" class="">0.00</strong></span>
-    </div>
-  </article>
-
-  <!-- ====== Órdenes rápidas + parámetros de simulación ====== -->
-  <article class="bt-ops">
-    <div>
-      <div class="row">
-        <label>
-          <span>Activo</span>
-          <select id="px-source">
-            <option value="under">Subyacente</option>
-            {% if chart_opt %}<option value="option">Opción</option>{% endif %}
-          </select>
-        </label>
-        <label>
-          <span>Cantidad</span>
-          <input type="number" id="qty" value="0" step="1" min="-999" max="999" style="width:100px;">
-        </label>
-        <button id="btnBuy">Comprar (Market)</button>
-        <button id="btnSell">Vender (Market)</button>
-        <button id="btnFlat" class="secondary">Cerrar</button>
-      </div>
-      <small class="muted">Nota: para opciones se usa multiplicador 100 por contrato.</small>
-    </div>
-
-    <div class="ops-right">
-      <div>Posición: <strong id="pos-side">Flat</strong> | Qty: <strong id="pos-qty">0</strong> | Entrada: <strong id="pos-entry">—</strong></div>
-      <div>MTM actual: <strong id="pos-mtm">0.00</strong></div>
-      <div class="row" style="margin-top:.35rem;">
-        <label><span>Slippage (bps)</span><input id="slip-bps" type="number" value="0" step="1" min="0" style="width:100px;"></label>
-        <label><span>Comisión fija (por orden)</span><input id="comm-fixed" type="number" value="0" step="0.01" min="0" style="width:130px;"></label>
-        <label><span>Comisión por unidad</span><input id="comm-perunit" type="number" value="0" step="0.01" min="0" style="width:130px;"></label>
-        <label><span>Capital inicial</span><input id="initial-capital" type="number" value="100000" step="100" min="0" style="width:140px;"></label>
-      </div>
-    </div>
-  </article>
-
-  <!-- ====== Toggle del Panel 4 (Opción / Equity) ====== -->
-  <article class="panel4-toggle">
-    <div class="row">
-      <strong>Panel 4:</strong>
-      <label class="radio-inline"><input type="radio" name="panel4mode" value="OPTION"> Opción</label>
-      <label class="radio-inline"><input type="radio" name="panel4mode" value="EQUITY"> Equity</label>
-      <span class="muted">Puedes alternar entre el gráfico de la opción seleccionada y la curva de capital (equity curve + drawdown).</span>
-    </div>
-  </article>
-
   <!-- ====== Gráficos + Cadena ====== -->
   <article class="layout">
-    <!-- Izquierda: 4 gráficos (el 4º se usa para Opción o Equity) -->
+    <!-- Izquierda: 4 gráficos -->
     <div>
       <div class="grid-2">
         <section class="panel"><div id="chart_10m" class="chart"></div></section>
         <section class="panel"><div id="chart_30m" class="chart"></div></section>
         <section class="panel"><div id="chart_1d" class="chart"></div></section>
+        <!-- Siempre Opciones en el panel 4 -->
         <section class="panel"><div id="chart_opt" class="chart"></div></section>
       </div>
     </div>
 
     <!-- Derecha: Cadena con scroll -->
     <aside class="chain-container">
-      <div class="chain-header">
-        Cadena de opciones <span class="muted">as of {{ form.cleaned_data.start_date|date:"Y-m-d" }}</span>
-      </div>
+      <header class="section-head chain-header">
+        <div class="section-title">Cadena de opciones</div>
+        <div class="muted">as of {{ form.cleaned_data.start_date|date:"Y-m-d" }}</div>
+      </header>
       <div class="chain-body">
         {% if option_chain %}
           <table>
@@ -145,46 +200,6 @@
         {% endif %}
       </div>
     </aside>
-  </article>
-
-  <!-- ====== Órdenes abiertas ====== -->
-  <article class="section-card">
-    <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;">
-      <strong>Órdenes</strong>
-      <div>
-        <button id="btnExportOrders" class="secondary">Exportar órdenes CSV</button>
-      </div>
-    </header>
-    <div class="table-wrap">
-      <table>
-        <thead>
-        <tr>
-          <th>ID</th><th>TS</th><th>Side</th><th>Tipo</th><th>Precio</th><th>Qty</th><th>Activo</th><th>Estado</th><th>Fill TS</th><th>Fill Px</th><th>Acción</th>
-        </tr>
-        </thead>
-        <tbody id="orders-body"></tbody>
-      </table>
-    </div>
-  </article>
-
-  <!-- ====== Trades cerrados ====== -->
-  <article class="section-card">
-    <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;">
-      <strong>Trades</strong>
-      <div>
-        <button id="btnExportTrades" class="secondary">Exportar trades CSV</button>
-      </div>
-    </header>
-    <div class="table-wrap">
-      <table>
-        <thead>
-        <tr>
-          <th>ID</th><th>Side</th><th>Qty</th><th>Entrada TS</th><th>Entrada Px</th><th>Salida TS</th><th>Salida Px</th><th>P&amp;L</th>
-        </tr>
-        </thead>
-        <tbody id="trades-body"></tbody>
-      </table>
-    </div>
   </article>
 
   <!-- ====== Contexto JSON para JS ====== -->

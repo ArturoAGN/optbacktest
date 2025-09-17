@@ -1,14 +1,40 @@
-// backtest.js - reproducción + órdenes + P&L + EQUITY CURVE/DRAWDOWN + toggle Panel4 + Reset + export CSV
+// backtest.js - reproducción + órdenes + P&L (SIN equity) + opción en Panel 4 SIEMPRE
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Date pickers: apertura forzada (si el navegador lo soporta)
+  // Forzar apertura del datepicker (si el navegador lo soporta)
   document.querySelectorAll('input[type="date"]').forEach(el => {
     el.addEventListener('click', () => { if (el.showPicker) el.showPicker(); });
     el.addEventListener('keydown', (e) => { if (e.key === 'Escape') el.value = ''; });
   });
 
+  // ==== Tabs Órdenes/Trades ====
+  const tabOrders = document.getElementById('tab-orders');
+  const tabTrades = document.getElementById('tab-trades');
+  const panelOrders = document.getElementById('panel-orders');
+  const panelTrades = document.getElementById('panel-trades');
+
+  function activateTab(which){
+    const isOrders = (which === 'orders');
+    if (tabOrders && tabTrades) {
+      tabOrders.classList.toggle('active', isOrders);
+      tabTrades.classList.toggle('active', !isOrders);
+      tabOrders.setAttribute('aria-selected', isOrders ? 'true' : 'false');
+      tabTrades.setAttribute('aria-selected', !isOrders ? 'true' : 'false');
+    }
+    if (panelOrders && panelTrades) {
+      panelOrders.classList.toggle('active', isOrders);
+      panelTrades.classList.toggle('active', !isOrders);
+    }
+  }
+  if (tabOrders && tabTrades && panelOrders && panelTrades){
+    tabOrders.addEventListener('click', ()=> activateTab('orders'));
+    tabTrades.addEventListener('click', ()=> activateTab('trades'));
+    activateTab('orders'); // por defecto
+  }
+
+  // ====== Contexto ======
   const ctxEl = document.getElementById('bt-context');
-  if (!ctxEl) return; // página sin datos aún
+  if (!ctxEl) return;
   const BT = JSON.parse(ctxEl.textContent);
 
   const CH10  = BT.ch10  || null;
@@ -17,88 +43,30 @@ document.addEventListener('DOMContentLoaded', () => {
   const CHOPT = BT.chopt || null;
   const RB_HOURS = BT.rb_hours || [20,4];
 
-  // Utilidades
+  // ====== Utilidades ======
   const toMillis = (iso) => new Date(iso).getTime();
   const bisectRight = (arr, x) => { let lo=0, hi=arr.length; while(lo<hi){const mid=(lo+hi)>>>1; if(arr[mid]<=x) lo=mid+1; else hi=mid;} return lo-1; };
   const fmt = (n, d=2) => (n==null || isNaN(n) ? "—" : Number(n).toFixed(d));
-  const uid = (() => { let i=1; return () => i++; })();
 
   const X10 = CH10 ? CH10.x.map(toMillis) : [];
   const X30 = CH30 ? CH30.x.map(toMillis) : [];
   const XO  = CHOPT ? CHOPT.x.map(toMillis) : [];
 
-  // === Helpers de trazas/layout ===
-  function baseLayout(title, isIntraday, payload, rbHours) {
-    const rb = isIntraday
-      ? [{ pattern: 'day of week', bounds: [6, 1] }, { pattern: 'hour', bounds: rbHours }]
-      : [{ pattern: 'day of week', bounds: [6, 1] }];
-
-    const shapes = [];
-    if (isIntraday && payload && payload.ext) {
-      payload.ext.forEach(w => {
-        shapes.push({
-          type: 'rect', xref: 'x', yref: 'paper',
-          x0: w.start, x1: w.end, y0: 0, y1: 1,
-          fillcolor: (w.kind === 'pm') ? 'rgba(59,130,246,0.10)' : 'rgba(16,185,129,0.12)',
-          line: { width: 0 }, layer: 'below'
-        });
-      });
-    }
-
-    return {
-      title,
-      dragmode: 'zoom',
-      margin: { l: 40, r: 20, t: 28, b: 28 },
-      xaxis: { type: 'date', rangeslider: { visible: false }, rangebreaks: rb },
-      yaxis: { title: 'Precio', domain: [0.30, 1.0] },
-      yaxis2: { title: 'Volumen', domain: [0.0, 0.25] },
-      legend: { orientation: 'h', x: 0, y: 1.08 },
-      shapes
-    };
-  }
-
-  function tracesFrom(payload, upto) {
-    const k = (upto == null) ? payload.x.length : Math.max(1, upto);
-    return [
-      {
-        x: payload.x.slice(0, k),
-        open: payload.open.slice(0, k),
-        high: payload.high.slice(0, k),
-        low: payload.low.slice(0, k),
-        close: payload.close.slice(0, k),
-        type: 'candlestick',
-        name: 'Precio',
-        xaxis: 'x',
-        yaxis: 'y1'
-      },
-      {
-        x: payload.x.slice(0, k),
-        y: payload.volume.slice(0, k),
-        type: 'bar',
-        name: 'Volumen',
-        xaxis: 'x',
-        yaxis: 'y2',
-        opacity: 0.4
-      }
-    ];
-  }
+  const { baseLayout, tracesFrom } = window.OptCharts;
 
   // ====== Estado de reproducción ======
-  let idx = 1;                       // empieza en la primera vela completa
+  let idx = 1;
   let timer = null;
-  let speed = 1;                     // 1x = 600ms por paso
+  let speed = 1;
   const BASE_MS = 600;
 
+  // ====== Elementos UI ======
   const elTs  = document.getElementById('bt-ts');
   const elPx  = document.getElementById('bt-px');
   const elOpt = document.getElementById('bt-opt');
   const elPnL = document.getElementById('bt-pnl');
 
-  function current10mClose(i) { return CH10 ? CH10.close[i] : null; }
-  function current10mTs(i)    { return CH10 ? CH10.x[i]     : null; }
-  const nearestIndex = (arrTimes, tMs) => (arrTimes && arrTimes.length) ? Math.max(0, bisectRight(arrTimes, tMs)) : -1;
-
-  // ====== Estado de órdenes/posiciones ======
+  // ====== Órdenes/posiciones ======
   const elSide  = document.getElementById('pos-side');
   const elQty   = document.getElementById('pos-qty');
   const elEntry = document.getElementById('pos-entry');
@@ -107,17 +75,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const state = {
     pos: { qty: 0, entry: null, source: 'under' },  // qty>0 long, qty<0 short
     realized: 0,
-    params: { slip_bps: 0, comm_fixed: 0, comm_perunit: 0 },
-    equity: { init: (BT.init_equity || 100000), x: [], y: [], dd: [], max: null },
-    panel4mode: (CHOPT ? 'OPTION' : 'EQUITY')
+    params: { slip_bps: 0, comm_fixed: 0, comm_perunit: 0 }
   };
 
-  // Inyecta capital inicial al input
-  const elInitCap = document.getElementById('initial-capital');
-  if (elInitCap) elInitCap.value = state.equity.init;
-
-  const orders = [];  // lista de órdenes
-  const trades = [];  // lista de trades (cuando pos vuelve a 0)
+  const orders = [];
+  const trades = [];
 
   // ====== Helpers financieros ======
   const multiplier = (source) => source === 'option' ? 100 : 1;
@@ -163,15 +125,32 @@ document.addEventListener('DOMContentLoaded', () => {
     return { mtm, total };
   }
 
+  function recordTrade(closedQtySameSign, entryPx, exitPx){
+    const id = orders.length + trades.length + 1;
+    const side = (closedQtySameSign > 0) ? 'LONG' : 'SHORT';
+    const qty  = Math.abs(closedQtySameSign);
+    const pnl = (side === 'LONG')
+      ? (exitPx - entryPx) * qty * multiplier(state.pos.source)
+      : (entryPx - exitPx) * qty * multiplier(state.pos.source);
+
+    trades.push({
+      id, side, qty,
+      entry_ts: elTs.textContent || '',
+      entry_px: entryPx,
+      exit_ts:  elTs.textContent || '',
+      exit_px:  exitPx,
+      pnl: pnl
+    });
+    renderTrades();
+  }
+
   function realizeClose(qtyToClose, fillPx){
-    // qtyToClose: mismo signo que la posición (positivo si long)
     const pnlPerUnit = (state.pos.qty > 0) ? (fillPx - state.pos.entry) : (state.pos.entry - fillPx);
     const pnlGross = pnlPerUnit * Math.abs(qtyToClose) * multiplier(state.pos.source);
     state.realized += pnlGross;
   }
 
   function consumeFillIntoPosition(side, qty, fillPx, source, comm){
-    // qty >0 para BUY, <0 para SELL. restamos comisiones a realized
     state.realized -= (comm || 0);
 
     if (state.pos.qty === 0){
@@ -179,7 +158,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     if (state.pos.source !== source){
-      // cerrar todo y reabrir en el otro activo
       realizeClose(state.pos.qty, fillPx);
       recordTrade(state.pos.qty, state.pos.entry, fillPx);
       state.pos = { qty: qty, entry: fillPx, source };
@@ -188,7 +166,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const newQty = state.pos.qty + qty;
 
-    // Mismo lado => promediar
     if ((state.pos.qty > 0 && newQty > 0) || (state.pos.qty < 0 && newQty < 0)){
       const oldAbs = Math.abs(state.pos.qty);
       const addAbs = Math.abs(qty);
@@ -199,7 +176,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Lado contrario => cierre parcial o total
     const closingAbs = Math.min(Math.abs(state.pos.qty), Math.abs(qty));
     const closingQtySameSign = (state.pos.qty > 0) ? closingAbs : -closingAbs;
 
@@ -218,32 +194,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function recordTrade(closedQtySameSign, entryPx, exitPx){
-    const id = uid();
-    const side = (closedQtySameSign > 0) ? 'LONG' : 'SHORT';
-    const qty  = Math.abs(closedQtySameSign);
-    const pnl = (side === 'LONG')
-      ? (exitPx - entryPx) * qty * multiplier(state.pos.source)
-      : (entryPx - exitPx) * qty * multiplier(state.pos.source);
-
-    trades.push({
-      id, side, qty,
-      entry_ts: elTs.textContent || '',
-      entry_px: entryPx,
-      exit_ts:  elTs.textContent || '',
-      exit_px:  exitPx,
-      pnl: pnl
-    });
-    renderTrades();
-  }
-
   // ====== Órdenes ======
   const elOrdersBody = document.getElementById('orders-body');
   const elTradesBody = document.getElementById('trades-body');
 
   function placeOrder(side, type, price, qty, source, tif){
-    const id = uid();
-    const ts = current10mTs(idx-1);
+    const id = (orders.length + trades.length) + 1;
+    const ts = CH10 ? CH10.x[Math.max(0, idx-1)] : '';
     orders.push({
       id, ts, side, type, price: (type === 'MKT' ? null : Number(price||0)),
       qty: Number(qty), source, tif, status: 'OPEN', fill_ts: null, fill_px: null
@@ -309,6 +266,12 @@ document.addEventListener('DOMContentLoaded', () => {
     renderOrders();
   }
 
+  function getBar(source, i){
+    if (source === 'option' && CHOPT) {
+      return { o: CHOPT.open[i], h: CHOPT.high[i], l: CHOPT.low[i], c: CHOPT.close[i], t: CHOPT.x[i], ms: XO[i] };
+    }
+    return { o: CH10.open[i], h: CH10.high[i], l: CH10.low[i], c: CH10.close[i], t: CH10.x[i], ms: X10[i] };
+  }
   function processOrdersOnCurrentBar(){
     const barUnder  = getBar('under',  idx-1);
     const barOption = (CHOPT ? getBar('option', Math.min(idx-1, CHOPT.x.length-1)) : null);
@@ -320,6 +283,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderOrders(){
+    if (!elOrdersBody) return;
     elOrdersBody.innerHTML = '';
     for (const o of orders){
       const tr = document.createElement('tr');
@@ -346,6 +310,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   function renderTrades(){
+    if (!elTradesBody) return;
     elTradesBody.innerHTML = '';
     for (const t of trades){
       const tr = document.createElement('tr');
@@ -377,89 +342,24 @@ document.addEventListener('DOMContentLoaded', () => {
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
-  document.getElementById('btnExportOrders').addEventListener('click', () => {
-    const rows = orders.map(o => ({ id:o.id, ts:o.ts, side:o.side, type:o.type, price:o.price, qty:o.qty, source:o.source, status:o.status, fill_ts:o.fill_ts, fill_px:o.fill_px }));
-    exportCSV('orders.csv', rows, ['id','ts','side','type','price','qty','source','status','fill_ts','fill_px']);
-  });
-  document.getElementById('btnExportTrades').addEventListener('click', () => {
-    const rows = trades.map(t => ({ id:t.id, side:t.side, qty:t.qty, entry_ts:t.entry_ts, entry_px:t.entry_px, exit_ts:t.exit_ts, exit_px:t.exit_px, pnl:t.pnl }));
-    exportCSV('trades.csv', rows, ['id','side','qty','entry_ts','entry_px','exit_ts','exit_px','pnl']);
-  });
-
-  // ====== Panel 4: OPTION / EQUITY ======
-  const radios = document.querySelectorAll('input[name="panel4mode"]');
-  function setDefaultPanel4(){
-    const defVal = state.panel4mode;
-    radios.forEach(r => { r.checked = (r.value === defVal); });
+  const btnOrders = document.getElementById('btnExportOrders');
+  const btnTrades = document.getElementById('btnExportTrades');
+  if (btnOrders){
+    btnOrders.addEventListener('click', () => {
+      const rows = orders.map(o => ({ id:o.id, ts:o.ts, side:o.side, type:o.type, price:o.price, qty:o.qty, source:o.source, status:o.status, fill_ts:o.fill_ts, fill_px:o.fill_px }));
+      exportCSV('orders.csv', rows, ['id','ts','side','type','price','qty','source','status','fill_ts','fill_px']);
+    });
   }
-  setDefaultPanel4();
-
-  radios.forEach(r => r.addEventListener('change', () => {
-    state.panel4mode = document.querySelector('input[name="panel4mode"]:checked').value;
-    renderPanel4(); // re-render inmediato
-  }));
-
-  // Capital inicial cambia => resetea serie de equity (recomendado usar Reset)
-  elInitCap.addEventListener('change', () => {
-    state.equity.init = parseFloat(elInitCap.value || '100000');
-    // limpiar serie para evitar “saltos” con valor previo
-    state.equity.x = []; state.equity.y = []; state.equity.dd = []; state.equity.max = null;
-    renderPanel4();
-  });
-
-  // ====== Equity curve & drawdown ======
-  function pushEquityPoint(tsISO, equityNow){
-    state.equity.x.push(tsISO);
-    state.equity.y.push(equityNow);
-    if (state.equity.max == null || equityNow > state.equity.max) state.equity.max = equityNow;
-    const dd = (state.equity.max > 0) ? (equityNow / state.equity.max - 1) : 0;
-    state.equity.dd.push(dd);
+  if (btnTrades){
+    btnTrades.addEventListener('click', () => {
+      const rows = trades.map(t => ({ id:t.id, side:t.side, qty:t.qty, entry_ts:t.entry_ts, entry_px:t.entry_px, exit_ts:t.exit_ts, exit_px:t.exit_px, pnl:t.pnl }));
+      exportCSV('trades.csv', rows, ['id','side','qty','entry_ts','entry_px','exit_ts','exit_px','pnl']);
+    });
   }
 
-  function renderEquityChart(){
-    const x = state.equity.x;
-    const y = state.equity.y;
-    const dd = state.equity.dd;
-
-    if (!x.length){
-      Plotly.react('chart_opt',
-        [{x:[], y:[], type:'scatter', mode:'lines', name:'Equity'},
-         {x:[], y:[], type:'bar', name:'Drawdown', yaxis:'y2', opacity:0.3}],
-        {
-          title:'Equity Curve (capital)',
-          dragmode:'zoom', margin:{l:40,r:40,t:28,b:28},
-          xaxis:{type:'date', rangeslider:{visible:false}},
-          yaxis:{title:'Equity'},
-          yaxis2:{title:'Drawdown', overlaying:'y', side:'right'},
-          legend:{orientation:'h', x:0, y:1.08}
-        },
-        {responsive:true}
-      );
-      return;
-    }
-
-    Plotly.react('chart_opt',
-      [
-        { x, y, type:'scatter', mode:'lines', name:'Equity' },
-        { x, y: dd, type:'bar', name:'Drawdown', yaxis:'y2', opacity:0.3 }
-      ],
-      {
-        title:'Equity Curve (capital) + Drawdown',
-        dragmode:'zoom', margin:{l:40,r:40,t:28,b:28},
-        xaxis:{type:'date', rangeslider:{visible:false}},
-        yaxis:{title:'Equity'},
-        yaxis2:{title:'Drawdown', overlaying:'y', side:'right'},
-        legend:{orientation:'h', x:0, y:1.08}
-      },
-      {responsive:true}
-    );
-  }
-
+  // ====== Render de OPCIONES en Panel 4 (siempre) ======
   function renderOptionChart(uptoK){
-    if (!CHOPT){
-      // fallback a equity si no hay opción
-      renderEquityChart(); return;
-    }
+    if (!CHOPT){ Plotly.purge('chart_opt'); return; }
     const k = (uptoK==null) ? 1 : Math.max(1, uptoK);
     Plotly.react('chart_opt',
       [
@@ -467,28 +367,18 @@ document.addEventListener('DOMContentLoaded', () => {
           low: CHOPT.low.slice(0,k), close: CHOPT.close.slice(0,k), type:'candlestick', name:'Precio', xaxis:'x', yaxis:'y1' },
         { x: CHOPT.x.slice(0,k), y: CHOPT.volume.slice(0,k), type:'bar', name:'Volumen', xaxis:'x', yaxis:'y2', opacity:0.4 }
       ],
-      baseLayout(CHOPT.title, true, CHOPT, RB_HOURS),
+      baseLayout(CHOPT.title || 'Opción', true, CHOPT, RB_HOURS),
       {responsive:true}
     );
   }
 
-  function renderPanel4(kOpt){
-    if (state.panel4mode === 'EQUITY'){ renderEquityChart(); }
-    else { renderOptionChart(kOpt || 1); }
-  }
-
   // ====== Reproducción y sincronía ======
-  function getBar(source, i){
-    if (source === 'option' && CHOPT) {
-      return { o: CHOPT.open[i], h: CHOPT.high[i], l: CHOPT.low[i], c: CHOPT.close[i], t: CHOPT.x[i], ms: XO[i] };
-    }
-    return { o: CH10.open[i], h: CH10.high[i], l: CH10.low[i], c: CH10.close[i], t: CH10.x[i], ms: X10[i] };
-  }
+  function nearestIndex(arrTimes, tMs) { return (arrTimes && arrTimes.length) ? Math.max(0, bisectRight(arrTimes, tMs)) : -1; }
 
   function updateFrame(i){
     if (!CH10) return;
     idx = Math.max(1, Math.min(i, CH10.x.length));
-    const tIso = current10mTs(idx-1);
+    const tIso = CH10.x[idx-1];
     const tMs  = X10[idx-1];
 
     Plotly.react('chart_10m', tracesFrom(CH10, idx), baseLayout(CH10.title, true, CH10, RB_HOURS), {responsive:true});
@@ -498,33 +388,31 @@ document.addEventListener('DOMContentLoaded', () => {
       Plotly.react('chart_30m', tracesFrom(CH30, j), baseLayout(CH30.title, true, CH30, RB_HOURS), {responsive:true});
     }
 
-    // OPTION/EQUITY panel se renderiza más abajo según modo
+    if (CH1D) {
+      Plotly.react('chart_1d', tracesFrom(CH1D, null), baseLayout(CH1D.title, false, CH1D, RB_HOURS), {responsive:true});
+    }
 
-    // Status line
-    const pxNowUnder = current10mClose(idx-1);
+    if (CHOPT) {
+      const k = Math.max(1, nearestIndex(XO, tMs) + 1);
+      renderOptionChart(k);
+    } else {
+      renderOptionChart(null);
+    }
+
+    const pxNowUnder = CH10 ? CH10.close[idx-1] : null;
     let pxNowOpt = null;
     if (CHOPT) {
       const k = Math.max(1, nearestIndex(XO, tMs) + 1);
-      if (state.panel4mode === 'OPTION') renderOptionChart(k);
       if (k>0) pxNowOpt = CHOPT.close[k-1];
-    } else {
-      // si no hay opción y el modo es OPTION, lo forzamos a EQUITY
-      if (state.panel4mode === 'OPTION') { state.panel4mode = 'EQUITY'; setDefaultPanel4(); }
     }
 
     elTs.textContent  = tIso || '—';
     elPx.textContent  = fmt(pxNowUnder);
     elOpt.textContent = fmt(pxNowOpt);
 
-    // Procesar órdenes en esta barra (antes de equity)
     processOrdersOnCurrentBar();
-
-    // P&L y Equity
-    const pnl = recalcPnL(pxNowUnder, pxNowOpt);
-    const eqNow = (state.equity.init || 0) + (state.realized || 0) + (pnl.mtm || 0);
-    pushEquityPoint(tIso, eqNow);
-
-    if (state.panel4mode === 'EQUITY') renderEquityChart();
+    recalcPnL(pxNowUnder, pxNowOpt);
+    refreshPositionUI();
   }
 
   function play(){
@@ -542,7 +430,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btnPause').disabled = true;
   }
 
-  // Controles de reproducción
+  // Controles
   document.getElementById('btnStart').addEventListener('click', () => { pause(); updateFrame(1); });
   document.getElementById('btnBack').addEventListener('click',  () => { pause(); updateFrame(Math.max(1, idx-1)); });
   document.getElementById('btnFwd').addEventListener('click',   () => { pause(); updateFrame(idx+1); });
@@ -553,28 +441,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (timer) { pause(); play(); }
   });
 
-  // Reset total: borra posiciones, órdenes, trades y equity; regresa a idx=1
+  // Reset
   document.getElementById('btnReset').addEventListener('click', () => {
     pause();
-    // estado financiero
     state.pos = { qty: 0, entry: null, source: 'under' };
     state.realized = 0;
-    // tablas
-    orders.length = 0;
-    trades.length = 0;
+    orders.length = 0; trades.length = 0;
     renderOrders(); renderTrades();
-    // equity
-    state.equity.x = []; state.equity.y = []; state.equity.dd = []; state.equity.max = null;
-    // reposicionar
     idx = 1;
-    // re-render
-    renderPanel4();
     updateFrame(1);
   });
 
   // Parámetros
   ['slip-bps','comm-fixed','comm-perunit'].forEach(id => {
-    document.getElementById(id).addEventListener('change', updateParamsFromUI);
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', updateParamsFromUI);
   });
   updateParamsFromUI();
 
@@ -585,8 +466,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!qty) return;
     placeOrder('BUY','MKT',null,qty,source,'DAY');
     processOrdersOnCurrentBar();
-    const pxU = CH10.close[idx-1];
-    const pxO = (CHOPT && XO.length) ? (() => { const k=nearestIndex(XO, X10[idx-1]); return k>=0?CHOPT.close[k]:null; })() : null;
+    const tMs = X10[Math.max(1, idx)-1];
+    const pxU = CH10 ? CH10.close[idx-1] : null;
+    const k = CHOPT ? Math.max(0, nearestIndex(XO, tMs)) : -1;
+    const pxO = (CHOPT && k>=0) ? CHOPT.close[k] : null;
     recalcPnL(pxU, pxO);
     refreshPositionUI();
   });
@@ -596,8 +479,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!qty) return;
     placeOrder('SELL','MKT',null,qty,source,'DAY');
     processOrdersOnCurrentBar();
-    const pxU = CH10.close[idx-1];
-    const pxO = (CHOPT && XO.length) ? (() => { const k=nearestIndex(XO, X10[idx-1]); return k>=0?CHOPT.close[k]:null; })() : null;
+    const tMs = X10[Math.max(1, idx)-1];
+    const pxU = CH10 ? CH10.close[idx-1] : null;
+    const k = CHOPT ? Math.max(0, nearestIndex(XO, tMs)) : -1;
+    const pxO = (CHOPT && k>=0) ? CHOPT.close[k] : null;
     recalcPnL(pxU, pxO);
     refreshPositionUI();
   });
@@ -608,39 +493,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const side = qtyToClose > 0 ? 'SELL' : 'BUY';
     placeOrder(side,'MKT',null,Math.abs(qtyToClose),source,'DAY');
     processOrdersOnCurrentBar();
-    const pxU = CH10.close[idx-1];
-    const pxO = (CHOPT && XO.length) ? (() => { const k=nearestIndex(XO, X10[idx-1]); return k>=0?CHOPT.close[k]:null; })() : null;
+    const tMs = X10[Math.max(1, idx)-1];
+    const pxU = CH10 ? CH10.close[idx-1] : null;
+    const k = CHOPT ? Math.max(0, nearestIndex(XO, tMs)) : -1;
+    const pxO = (CHOPT && k>=0) ? CHOPT.close[k] : null;
     recalcPnL(pxU, pxO);
     refreshPositionUI();
   });
-
-  // Órdenes avanzadas
-  document.getElementById('btnPlaceBuy')?.addEventListener('click', () => {
-    const type = document.getElementById('ord-type').value;
-    const price = document.getElementById('ord-price').value;
-    const tif = document.getElementById('ord-tif').value;
-    const qty = parseInt(document.getElementById('qty').value||'0',10);
-    const source = document.getElementById('px-source').value;
-    if (!qty) return;
-    placeOrder('BUY', type, price, qty, source, tif);
-    renderOrders();
-  });
-  document.getElementById('btnPlaceSell')?.addEventListener('click', () => {
-    const type = document.getElementById('ord-type').value;
-    const price = document.getElementById('ord-price').value;
-    const tif = document.getElementById('ord-tif').value;
-    const qty = parseInt(document.getElementById('qty').value||'0',10);
-    const source = document.getElementById('px-source').value;
-    if (!qty) return;
-    placeOrder('SELL', type, price, qty, source, tif);
-    renderOrders();
-  });
-  document.getElementById('btnCancelAll')?.addEventListener('click', cancelAll);
 
   // Render inicial
   if (CH10)  Plotly.newPlot('chart_10m', tracesFrom(CH10, 1),   baseLayout(CH10.title,  true,  CH10,  RB_HOURS),  {responsive:true});
   if (CH30)  Plotly.newPlot('chart_30m', tracesFrom(CH30, 1),   baseLayout(CH30.title,  true,  CH30,  RB_HOURS),  {responsive:true});
   if (CH1D)  Plotly.newPlot('chart_1d',  tracesFrom(CH1D, null),baseLayout(CH1D.title,  false, CH1D, RB_HOURS),  {responsive:true});
-  renderPanel4(1);
+  renderOptionChart(1);
   updateFrame(1);
 });
