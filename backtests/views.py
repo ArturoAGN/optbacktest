@@ -16,16 +16,6 @@ UI_TZ = ZoneInfo(os.getenv("TIME_ZONE", "America/Mexico_City"))  # tu zona p/ mo
 
 
 class HomeView(TemplateView):
-    """
-    Vista principal:
-    - 10m (base) desde Polygon.
-    - 30m re-muestreado ANCLADO a 09:30 ET (para velas limpias).
-    - Diario por sesión (ET 09:30–16:00).
-    - Sombreado de pre (04:00–09:30 ET) y after (16:00–20:00 ET).
-    - Rangebreak nocturno (20:00→04:00) en la zona de visualización (ET por defecto).
-    - Cadena de opciones + (opcional) gráfico de la opción seleccionada (10m).
-    - Entrega `bt_context` en JSON para JS (modular, sin lógica en el template).
-    """
     template_name = "backtests/home.html"
 
     def get_context_data(self, **kwargs) -> Dict[str, Any]:
@@ -33,20 +23,18 @@ class HomeView(TemplateView):
         form = EquityQueryForm(self.request.GET or None)
         ctx["form"] = form
 
-        # Zona de visualización: 'et' (por defecto) o 'local' (?tz=local)
         tz_mode = (self.request.GET.get("tz") or "et").lower()
         display_tz = MARKET_TZ if tz_mode != "local" else UI_TZ
         ctx["tz_mode"] = tz_mode
         ctx["display_tz_name"] = str(display_tz)
 
-        # Salidas por defecto
         ctx["chart_10m"] = None
         ctx["chart_30m"] = None
         ctx["chart_1d"] = None
         ctx["chart_opt"] = None
         ctx["option_chain"] = []
         ctx["opt_selected"] = self.request.GET.get("opt") or None
-        ctx["rb_hours"] = None  # (h_inicio, h_fin) para rangebreak nocturno
+        ctx["rb_hours"] = None  # (h_inicio, h_fin)
 
         if form.is_valid():
             api_key = os.getenv("POLYGON_API_KEY", "")
@@ -57,43 +45,27 @@ class HomeView(TemplateView):
             try:
                 client = PolygonClient(PolygonConfig(api_key=api_key))
 
-                # --- 1) 10m desde Polygon (en UTC -> convertiremos para front) ---
                 df_10m = client.get_equity_ohlcv(
-                    ticker=ticker,
-                    start_date=start_date,
-                    end_date=end_date,
-                    timespan="minute",
-                    multiplier=10,
-                    adjusted=True,
-                    sort="asc",
+                    ticker=ticker, start_date=start_date, end_date=end_date,
+                    timespan="minute", multiplier=10, adjusted=True, sort="asc",
                 )
                 if df_10m.empty:
                     messages.info(self.request, f"No se encontraron datos para {ticker} en el rango solicitado.")
-                    # Entregamos contexto JSON vacío para que el front no falle
                     ctx["bt_context"] = {"ch10": None, "ch30": None, "ch1d": None, "chopt": None,
-                                         "rb_hours": [20, 4], "tz_name": str(display_tz)}
+                                         "rb_hours": [20, 4], "tz_name": str(display_tz), "init_equity": 100000}
                     return ctx
 
-                # --- 2) Rangebreak nocturno (20:00→04:00 ET) trasladado a la tz de visualización ---
                 ctx["rb_hours"] = self._calc_rb_hours(display_tz, anchor=form.cleaned_data["start_date"])
-
-                # --- 3) Ventanas de pre/after (calculadas en ET y convertidas a display_tz) ---
                 ext_windows = self._build_extended_windows(df_10m, display_tz)
-
-                # --- 4) 30m anclado a 09:30 ET ---
                 df_30m = self._resample_intraday_anchored(df_10m, "30min", display_tz)
-
-                # --- 5) Diario por sesión (ET 09:30–16:00) -> display_tz ---
                 df_1d = self._daily_from_intraday_session(df_10m, start_date, end_date, display_tz)
 
-                # --- 6) Payloads para Plotly (fechas ISO sin tz en la tz de visualización) ---
                 ctx["chart_10m"] = self._to_plotly_payload(f"{ticker} · 10 minutos", df_10m, display_tz, ext_windows)
                 if not df_30m.empty:
                     ctx["chart_30m"] = self._to_plotly_payload(f"{ticker} · 30 minutos", df_30m, display_tz, ext_windows)
                 if not df_1d.empty:
                     ctx["chart_1d"] = self._to_plotly_payload(f"{ticker} · 1 día (sesión)", df_1d, display_tz, None)
 
-                # --- 7) Cadena de opciones (as_of = start_date) ---
                 chain = client.list_option_contracts(
                     underlying=ticker, as_of=start_date, limit=200,
                     contract_type=None, sort="expiration_date", order="asc"
@@ -102,17 +74,11 @@ class HomeView(TemplateView):
                 chain = self._cap_chain(chain, max_rows=40)
                 ctx["option_chain"] = chain
 
-                # --- 8) Opción seleccionada (si aplica) ---
                 opt_ticker = ctx["opt_selected"]
                 if opt_ticker:
                     df_opt = client.get_option_ohlcv(
-                        option_ticker=opt_ticker,
-                        start_date=start_date,
-                        end_date=end_date,
-                        timespan="minute",
-                        multiplier=10,
-                        adjusted=True,
-                        sort="asc",
+                        option_ticker=opt_ticker, start_date=start_date, end_date=end_date,
+                        timespan="minute", multiplier=10, adjusted=True, sort="asc",
                     )
                     if not df_opt.empty:
                         ctx["chart_opt"] = self._to_plotly_payload(f"{opt_ticker} · 10 minutos", df_opt, display_tz, ext_windows)
@@ -122,7 +88,7 @@ class HomeView(TemplateView):
             except Exception as e:
                 messages.error(self.request, f"Error inesperado: {e}")
 
-        # --- 9) Contexto JSON para los JS (siempre lo entregamos) ---
+        # Contexto JSON para front
         rb = ctx["rb_hours"] if ctx["rb_hours"] else (20, 4)
         ctx["bt_context"] = {
             "ch10":  ctx["chart_10m"],
@@ -131,56 +97,43 @@ class HomeView(TemplateView):
             "chopt": ctx["chart_opt"],
             "rb_hours": list(rb),
             "tz_name": ctx["display_tz_name"],
+            "init_equity": 100000,  # capital inicial por defecto (se puede cambiar en UI)
         }
         return ctx
 
-    # ==================== Helpers ====================
-
+    # ---------- Helpers ----------
     @staticmethod
     def _resample_intraday_anchored(df: pd.DataFrame, rule: str, display_tz: ZoneInfo) -> pd.DataFrame:
-        """Re-muestrea intradía anclado a 09:30 ET y convierte a tz de visualización."""
         if df.empty:
             return df
         dfi = df.copy()
-        # usar índice en ET para resample anclado
         dfi = dfi.set_index(dfi["datetime"].dt.tz_convert(MARKET_TZ))
-        agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "vwap": "mean", "trades": "sum"}
-        out = dfi.resample(
-            rule,
-            origin="start_day",
-            offset="9h30min",     # anclaje a 09:30
-            label="right",
-            closed="right"
-        ).agg(agg)
-        out = out.dropna(subset=["open", "close"]).reset_index(names="dt_mkt")
-        # a tz de visualización
+        agg = {"open":"first","high":"max","low":"min","close":"last","volume":"sum","vwap":"mean","trades":"sum"}
+        out = dfi.resample(rule, origin="start_day", offset="9h30min", label="right", closed="right").agg(agg)
+        out = out.dropna(subset=["open","close"]).reset_index(names="dt_mkt")
         out["datetime"] = out["dt_mkt"].dt.tz_convert(display_tz)
         out = out.drop(columns=["dt_mkt"])
         return out
 
     @staticmethod
     def _daily_from_intraday_session(df: pd.DataFrame, start_date: str, end_date: str, display_tz: ZoneInfo) -> pd.DataFrame:
-        """Construye velas diarias por sesión (09:30–16:00 ET) a partir de 10m."""
         if df.empty:
             return df
         dfi = df.copy()
         dfi["dt_mkt"] = dfi["datetime"].dt.tz_convert(MARKET_TZ)
         dfi["session_date"] = dfi["dt_mkt"].dt.date
-        agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "vwap": "mean", "trades": "sum"}
+        agg = {"open":"first","high":"max","low":"min","close":"last","volume":"sum","vwap":"mean","trades":"sum"}
         daily = dfi.groupby("session_date").agg(agg).reset_index()
-        # timestamp de cierre (16:00 ET) convertido a display_tz
         dt_close_et = pd.to_datetime(daily["session_date"]) + pd.to_timedelta("16:00:00")
         dt_close_et = dt_close_et.dt.tz_localize(MARKET_TZ)
         daily["datetime"] = dt_close_et.dt.tz_convert(display_tz)
-        # filtra por rango de calendario
         sd = datetime.strptime(start_date, "%Y-%m-%d").date()
         ed = datetime.strptime(end_date, "%Y-%m-%d").date()
         daily = daily[(daily["session_date"] >= sd) & (daily["session_date"] <= ed)]
-        return daily[["datetime", "open", "high", "low", "close", "volume", "vwap", "trades"]]
+        return daily[["datetime","open","high","low","close","volume","vwap","trades"]]
 
     @staticmethod
     def _build_extended_windows(df_10m: pd.DataFrame, display_tz: ZoneInfo) -> List[Dict[str, str]]:
-        """Devuelve ventanas de pre (04:00–09:30 ET) y after (16:00–20:00 ET) convertidas a display_tz."""
         if df_10m.empty:
             return []
         rmin = df_10m["datetime"].min()
@@ -206,11 +159,6 @@ class HomeView(TemplateView):
 
     @staticmethod
     def _calc_rb_hours(display_tz: ZoneInfo, anchor: date) -> Tuple[int, int]:
-        """
-        Convierte la noche del mercado (20:00→04:00 ET) a horas locales para rangebreak.
-        Usa 'anchor' para respetar DST.
-        Devuelve (hora_inicio, hora_fin).
-        """
         d = pd.Timestamp(anchor, tz=MARKET_TZ)
         start_night_et = d + pd.Timedelta(hours=20)
         end_night_et   = d + pd.Timedelta(hours=4) + pd.Timedelta(days=1)
@@ -221,7 +169,6 @@ class HomeView(TemplateView):
     @staticmethod
     def _to_plotly_payload(title: str, df: pd.DataFrame, display_tz: ZoneInfo,
                            ext_windows: List[Dict[str, str]] | None) -> Dict[str, Any]:
-        """Serializa OHLCV a dict para Plotly con fechas ISO en tz de visualización (sin tz)."""
         x_iso = df["datetime"].dt.tz_convert(display_tz).dt.tz_localize(None).dt.strftime("%Y-%m-%dT%H:%M:%S").tolist()
         payload = {
             "title":  title,
@@ -238,27 +185,23 @@ class HomeView(TemplateView):
 
     @staticmethod
     def _filter_chain_by_exp(chain: List[Dict[str, Any]], start_date: str, days_ahead: int = 60) -> List[Dict[str, Any]]:
-        """Filtra la cadena por vencimientos dentro de los próximos 'days_ahead' días a partir de start_date."""
         if not chain:
             return chain
         sd = datetime.strptime(start_date, "%Y-%m-%d").date()
         end = sd.fromordinal(sd.toordinal() + days_ahead)
         out = []
         for c in chain:
-            try:
-                exp = datetime.strptime(c.get("expiration_date"), "%Y-%m-%d").date()
-            except Exception:
-                continue
-            if sd <= exp <= end:
-                c = dict(c)
-                c["dte"] = (exp - sd).days
-                out.append(c)
+          try:
+              exp = datetime.strptime(c.get("expiration_date"), "%Y-%m-%d").date()
+          except Exception:
+              continue
+          if sd <= exp <= end:
+              c = dict(c); c["dte"] = (exp - sd).days; out.append(c)
         out.sort(key=lambda r: (r.get("dte", 9999), r.get("strike_price", 0.0)))
         return out
 
     @staticmethod
     def _cap_chain(chain: List[Dict[str, Any]], max_rows: int = 40) -> List[Dict[str, Any]]:
-        """Limita la cadena a 'max_rows' filas, balanceando CALL/PUT si es posible."""
         if len(chain) <= max_rows:
             return chain
         calls = [c for c in chain if (c.get("contract_type") or "").lower() == "call"]

@@ -30,6 +30,8 @@
       <button id="btnPlay"  title="Reproducir">▶ Play</button>
       <button id="btnPause" title="Pausar" disabled>⏸ Pausa</button>
       <button id="btnFwd"   title="Avanzar 1 paso">⏩ +10m</button>
+      <button id="btnReset" class="secondary" title="Reset de backtest (borra posiciones/órdenes/equity)">🔁 Reset</button>
+
       <label style="margin-left:.5rem;">
         <span class="lbl">Velocidad</span>
         <select id="speed">
@@ -79,52 +81,30 @@
         <label><span>Slippage (bps)</span><input id="slip-bps" type="number" value="0" step="1" min="0" style="width:100px;"></label>
         <label><span>Comisión fija (por orden)</span><input id="comm-fixed" type="number" value="0" step="0.01" min="0" style="width:130px;"></label>
         <label><span>Comisión por unidad</span><input id="comm-perunit" type="number" value="0" step="0.01" min="0" style="width:130px;"></label>
+        <label><span>Capital inicial</span><input id="initial-capital" type="number" value="100000" step="100" min="0" style="width:140px;"></label>
       </div>
     </div>
   </article>
 
-  <!-- ====== Entrada de órdenes avanzadas ====== -->
-  <article class="section-card">
-    <div class="row" style="align-items:end;">
-      <label>
-        <span>Tipo de orden</span>
-        <select id="ord-type">
-          <option value="MKT">Market</option>
-          <option value="LMT">Limit</option>
-          <option value="STP">Stop</option>
-        </select>
-      </label>
-      <label>
-        <span>Precio (si aplica)</span>
-        <input type="number" id="ord-price" step="0.01" placeholder="0.00" style="width:140px;">
-      </label>
-      <label>
-        <span>TIF</span>
-        <select id="ord-tif">
-          <option value="DAY">DAY</option>
-          <option value="GTC">GTC</option>
-        </select>
-      </label>
-
-      <button id="btnPlaceBuy">Colocar Buy</button>
-      <button id="btnPlaceSell">Colocar Sell</button>
-      <button id="btnCancelAll" class="secondary">Cancelar todas</button>
+  <!-- ====== Toggle del Panel 4 (Opción / Equity) ====== -->
+  <article class="panel4-toggle">
+    <div class="row">
+      <strong>Panel 4:</strong>
+      <label class="radio-inline"><input type="radio" name="panel4mode" value="OPTION"> Opción</label>
+      <label class="radio-inline"><input type="radio" name="panel4mode" value="EQUITY"> Equity</label>
+      <span class="muted">Puedes alternar entre el gráfico de la opción seleccionada y la curva de capital (equity curve + drawdown).</span>
     </div>
   </article>
 
   <!-- ====== Gráficos + Cadena ====== -->
   <article class="layout">
-    <!-- Izquierda: 4 gráficos (el último reservado para opción) -->
+    <!-- Izquierda: 4 gráficos (el 4º se usa para Opción o Equity) -->
     <div>
       <div class="grid-2">
         <section class="panel"><div id="chart_10m" class="chart"></div></section>
         <section class="panel"><div id="chart_30m" class="chart"></div></section>
         <section class="panel"><div id="chart_1d" class="chart"></div></section>
-        {% if chart_opt %}
-          <section class="panel"><div id="chart_opt" class="chart"></div></section>
-        {% else %}
-          <section class="panel placeholder"><div>Espacio para gráficos de opciones</div></section>
-        {% endif %}
+        <section class="panel"><div id="chart_opt" class="chart"></div></section>
       </div>
     </div>
 
