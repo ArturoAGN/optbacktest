@@ -1,215 +1,142 @@
 import os
-from datetime import datetime, date
-from typing import Dict, Any, List, Tuple
+import json
+import math
+import datetime as dt
 
-import pandas as pd
-from django.views.generic import TemplateView
-from django.contrib import messages
-from zoneinfo import ZoneInfo
+import pytz
+import requests
+from django.conf import settings
+from django.shortcuts import render
+from django.utils.timezone import now
 
-from .forms import EquityQueryForm
-from .services.marketdata import PolygonClient, PolygonConfig, PolygonError
+# === Config ===
+NY = pytz.timezone("America/New_York")
+POLYGON_KEY = os.getenv("POLYGON_API_KEY", getattr(settings, "POLYGON_API_KEY", ""))  # pon tu key en .env o settings
 
-# Zonas
-MARKET_TZ = ZoneInfo("America/New_York")                         # ET (mercado)
-UI_TZ = ZoneInfo(os.getenv("TIME_ZONE", "America/Mexico_City"))  # tu zona p/ modo 'local'
+BASE_URL = "https://api.polygon.io"
 
 
-class HomeView(TemplateView):
-    template_name = "backtests/home.html"
+def _iso_ny(ts_utc_ms: int) -> str:
+    """Convierte epoch-ms UTC a ISO 'YYYY-MM-DDTHH:MM' en America/New_York."""
+    ts_utc = dt.datetime.utcfromtimestamp(ts_utc_ms / 1000.0).replace(tzinfo=pytz.UTC)
+    ts_ny = ts_utc.astimezone(NY)
+    return ts_ny.strftime("%Y-%m-%dT%H:%M")
 
-    def get_context_data(self, **kwargs) -> Dict[str, Any]:
-        ctx = super().get_context_data(**kwargs)
-        form = EquityQueryForm(self.request.GET or None)
-        ctx["form"] = form
 
-        tz_mode = (self.request.GET.get("tz") or "et").lower()
-        display_tz = MARKET_TZ if tz_mode != "local" else UI_TZ
-        ctx["tz_mode"] = tz_mode
-        ctx["display_tz_name"] = str(display_tz)
+def _aggs_polygon(ticker: str, multiplier: int, timespan: str, date_from: str, date_to: str):
+    """
+    Llama a Polygon v2/aggs. Devuelve lista de dicts normalizados.
+    timespan: 'minute' | 'hour' | 'day'
+    """
+    if not POLYGON_KEY:
+        raise RuntimeError("Falta POLYGON_API_KEY")
 
-        ctx["chart_10m"] = None
-        ctx["chart_30m"] = None
-        ctx["chart_1d"] = None
-        ctx["chart_opt"] = None
-        ctx["option_chain"] = []
-        ctx["opt_selected"] = self.request.GET.get("opt") or None
-        ctx["rb_hours"] = None  # (h_inicio, h_fin)
+    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{date_from}/{date_to}"
+    params = {
+        "adjusted": "true",
+        "sort": "asc",
+        "limit": 50000,
+        "apiKey": POLYGON_KEY,
+    }
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    results = data.get("results", [])
+    out = []
+    for it in results:
+        out.append(
+            {
+                "x": _iso_ny(it["t"]),
+                "o": float(it["o"]),
+                "h": float(it["h"]),
+                "l": float(it["l"]),
+                "c": float(it["c"]),
+                "v": float(it.get("v", 0)),
+            }
+        )
+    return out
 
-        if form.is_valid():
-            api_key = os.getenv("POLYGON_API_KEY", "")
-            ticker = form.cleaned_data["ticker"].upper()
-            start_date = form.cleaned_data["start_date"].strftime("%Y-%m-%d")
-            end_date = form.cleaned_data["end_date"].strftime("%Y-%m-%d")
 
-            try:
-                client = PolygonClient(PolygonConfig(api_key=api_key))
+def _to_series(bars, title: str):
+    """Convierte lista de barras a estructura usada por Plotly en el front."""
+    return {
+        "title": title,
+        "x": [b["x"] for b in bars],
+        "open": [b["o"] for b in bars],
+        "high": [b["h"] for b in bars],
+        "low": [b["l"] for b in bars],
+        "close": [b["c"] for b in bars],
+        "volume": [b["v"] for b in bars],
+    }
 
-                df_10m = client.get_equity_ohlcv(
-                    ticker=ticker, start_date=start_date, end_date=end_date,
-                    timespan="minute", multiplier=10, adjusted=True, sort="asc",
-                )
-                if df_10m.empty:
-                    messages.info(self.request, f"No se encontraron datos para {ticker} en el rango solicitado.")
-                    ctx["bt_context"] = {"ch10": None, "ch30": None, "ch1d": None, "chopt": None,
-                                         "rb_hours": [20, 4], "tz_name": str(display_tz), "init_equity": 100000}
-                    return ctx
 
-                ctx["rb_hours"] = self._calc_rb_hours(display_tz, anchor=form.cleaned_data["start_date"])
-                ext_windows = self._build_extended_windows(df_10m, display_tz)
-                df_30m = self._resample_intraday_anchored(df_10m, "30min", display_tz)
-                df_1d = self._daily_from_intraday_session(df_10m, start_date, end_date, display_tz)
+def _dummy_series(start_dt: dt.datetime, n: int, step_min: int, title: str):
+    """Serie sintética (fallback) para que la UI nunca quede vacía si falla la API."""
+    xs, o, h, l, c, v = [], [], [], [], [], []
+    cur = start_dt.astimezone(NY)
+    px = 100.0
+    for i in range(n):
+        xs.append(cur.strftime("%Y-%m-%dT%H:%M"))
+        drift = math.sin(i / 8.0) * 0.8
+        rng = abs(math.cos(i / 5.0)) * 0.6 + 0.2
+        op = px + drift
+        hi = op + rng
+        lo = op - rng
+        cl = op + (rng * 0.4 - rng * 0.2)
+        vol = 1_000 + (i % 10) * 300
+        o.append(round(op, 2))
+        h.append(round(hi, 2))
+        l.append(round(lo, 2))
+        c.append(round(cl, 2))
+        v.append(vol)
+        px = cl
+        cur = cur + dt.timedelta(minutes=step_min)
+    return {"title": title, "x": xs, "open": o, "high": h, "low": l, "close": c, "volume": v}
 
-                ctx["chart_10m"] = self._to_plotly_payload(f"{ticker} · 10 minutos", df_10m, display_tz, ext_windows)
-                if not df_30m.empty:
-                    ctx["chart_30m"] = self._to_plotly_payload(f"{ticker} · 30 minutos", df_30m, display_tz, ext_windows)
-                if not df_1d.empty:
-                    ctx["chart_1d"] = self._to_plotly_payload(f"{ticker} · 1 día (sesión)", df_1d, display_tz, None)
 
-                chain = client.list_option_contracts(
-                    underlying=ticker, as_of=start_date, limit=200,
-                    contract_type=None, sort="expiration_date", order="asc"
-                )
-                chain = self._filter_chain_by_exp(chain, start_date, days_ahead=60)
-                chain = self._cap_chain(chain, max_rows=40)
-                ctx["option_chain"] = chain
+def home(request):
+    # --- Rango por defecto: del 1er día del mes actual (NY) a hoy (NY) ---
+    today_ny = now().astimezone(NY).date()
+    first_day = today_ny.replace(day=1)
 
-                opt_ticker = ctx["opt_selected"]
-                if opt_ticker:
-                    df_opt = client.get_option_ohlcv(
-                        option_ticker=opt_ticker, start_date=start_date, end_date=end_date,
-                        timespan="minute", multiplier=10, adjusted=True, sort="asc",
-                    )
-                    if not df_opt.empty:
-                        ctx["chart_opt"] = self._to_plotly_payload(f"{opt_ticker} · 10 minutos", df_opt, display_tz, ext_windows)
+    # Permitir override desde querystring si lo deseas
+    ticker = (request.GET.get("ticker") or "AAPL").upper()
+    start_date = request.GET.get("start") or first_day.strftime("%Y-%m-%d")
+    end_date = request.GET.get("end") or today_ny.strftime("%Y-%m-%d")
 
-            except PolygonError as e:
-                messages.error(self.request, f"Error de datos: {e}")
-            except Exception as e:
-                messages.error(self.request, f"Error inesperado: {e}")
+    # --- Cargar barras 10m desde Polygon (o dummy si hay error/429) ---
+    ch10 = None
+    try:
+        bars10 = _aggs_polygon(ticker, 10, "minute", start_date, end_date)
+        ch10 = _to_series(bars10, f"{ticker} · 10 minutos")
+    except Exception as e:
+        # Fallback (para no romper la UI). También útil en desarrollo sin API.
+        start_dt = dt.datetime.combine(first_day, dt.time(9, 30, tzinfo=NY))
+        ch10 = _dummy_series(start_dt, n=120, step_min=10, title=f"{ticker} · 10 minutos")
+        # Si quieres ver el error en templates/logs:
+        print("WARN: usando dummy 10m por error:", repr(e))
 
-        # Contexto JSON para front
-        rb = ctx["rb_hours"] if ctx["rb_hours"] else (20, 4)
-        ctx["bt_context"] = {
-            "ch10":  ctx["chart_10m"],
-            "ch30":  ctx["chart_30m"],
-            "ch1d":  ctx["chart_1d"],
-            "chopt": ctx["chart_opt"],
-            "rb_hours": list(rb),
-            "tz_name": ctx["display_tz_name"],
-            "init_equity": 100000,  # capital inicial por defecto (se puede cambiar en UI)
-        }
-        return ctx
+    # Puedes traer 30m/1D de Polygon si lo necesitas, pero la UI los reconstruye en vivo desde 10m.
+    # ch30 y ch1d se dejan en None para no duplicar datos.
+    ch30 = None
+    ch1d = None
 
-    # ---------- Helpers ----------
-    @staticmethod
-    def _resample_intraday_anchored(df: pd.DataFrame, rule: str, display_tz: ZoneInfo) -> pd.DataFrame:
-        if df.empty:
-            return df
-        dfi = df.copy()
-        dfi = dfi.set_index(dfi["datetime"].dt.tz_convert(MARKET_TZ))
-        agg = {"open":"first","high":"max","low":"min","close":"last","volume":"sum","vwap":"mean","trades":"sum"}
-        out = dfi.resample(rule, origin="start_day", offset="9h30min", label="right", closed="right").agg(agg)
-        out = out.dropna(subset=["open","close"]).reset_index(names="dt_mkt")
-        out["datetime"] = out["dt_mkt"].dt.tz_convert(display_tz)
-        out = out.drop(columns=["dt_mkt"])
-        return out
+    # Panel de opción (lo dejamos vacío por ahora; cuando selecciones una de la cadena, lo llenamos)
+    chopt = None
 
-    @staticmethod
-    def _daily_from_intraday_session(df: pd.DataFrame, start_date: str, end_date: str, display_tz: ZoneInfo) -> pd.DataFrame:
-        if df.empty:
-            return df
-        dfi = df.copy()
-        dfi["dt_mkt"] = dfi["datetime"].dt.tz_convert(MARKET_TZ)
-        dfi["session_date"] = dfi["dt_mkt"].dt.date
-        agg = {"open":"first","high":"max","low":"min","close":"last","volume":"sum","vwap":"mean","trades":"sum"}
-        daily = dfi.groupby("session_date").agg(agg).reset_index()
-        dt_close_et = pd.to_datetime(daily["session_date"]) + pd.to_timedelta("16:00:00")
-        dt_close_et = dt_close_et.dt.tz_localize(MARKET_TZ)
-        daily["datetime"] = dt_close_et.dt.tz_convert(display_tz)
-        sd = datetime.strptime(start_date, "%Y-%m-%d").date()
-        ed = datetime.strptime(end_date, "%Y-%m-%d").date()
-        daily = daily[(daily["session_date"] >= sd) & (daily["session_date"] <= ed)]
-        return daily[["datetime","open","high","low","close","volume","vwap","trades"]]
+    bt_ctx = {
+        "rb_hours": [20, 4],  # cierra hueco 20:00→04:00 (sin gaps entre AH y pre)
+        "ch10": ch10,
+        "ch30": ch30,
+        "ch1d": ch1d,
+        "chopt": chopt,
+    }
 
-    @staticmethod
-    def _build_extended_windows(df_10m: pd.DataFrame, display_tz: ZoneInfo) -> List[Dict[str, str]]:
-        if df_10m.empty:
-            return []
-        rmin = df_10m["datetime"].min()
-        rmax = df_10m["datetime"].max()
-        dt_mkt = df_10m["datetime"].dt.tz_convert(MARKET_TZ)
-        days = sorted(dt_mkt.dt.date.unique().tolist())
-        windows: List[Dict[str, str]] = []
-        for d in days:
-            pm_start_et = pd.Timestamp(d, tz=MARKET_TZ) + pd.Timedelta(hours=4)
-            pm_end_et   = pd.Timestamp(d, tz=MARKET_TZ) + pd.Timedelta(hours=9, minutes=30)
-            ah_start_et = pd.Timestamp(d, tz=MARKET_TZ) + pd.Timedelta(hours=16)
-            ah_end_et   = pd.Timestamp(d, tz=MARKET_TZ) + pd.Timedelta(hours=20)
-            for kind, s_et, e_et in (("pm", pm_start_et, pm_end_et), ("ah", ah_start_et, ah_end_et)):
-                s_disp = s_et.tz_convert(display_tz).tz_localize(None)
-                e_disp = e_et.tz_convert(display_tz).tz_localize(None)
-                if (pd.Timestamp(s_disp) <= rmax.tz_localize(None)) and (pd.Timestamp(e_disp) >= rmin.tz_localize(None)):
-                    windows.append({
-                        "kind":  kind,
-                        "start": s_disp.strftime("%Y-%m-%dT%H:%M:%S"),
-                        "end":   e_disp.strftime("%Y-%m-%dT%H:%M:%S"),
-                    })
-        return windows
-
-    @staticmethod
-    def _calc_rb_hours(display_tz: ZoneInfo, anchor: date) -> Tuple[int, int]:
-        d = pd.Timestamp(anchor, tz=MARKET_TZ)
-        start_night_et = d + pd.Timedelta(hours=20)
-        end_night_et   = d + pd.Timedelta(hours=4) + pd.Timedelta(days=1)
-        start_local = start_night_et.tz_convert(display_tz)
-        end_local   = end_night_et.tz_convert(display_tz)
-        return (int(start_local.hour), int(end_local.hour))
-
-    @staticmethod
-    def _to_plotly_payload(title: str, df: pd.DataFrame, display_tz: ZoneInfo,
-                           ext_windows: List[Dict[str, str]] | None) -> Dict[str, Any]:
-        x_iso = df["datetime"].dt.tz_convert(display_tz).dt.tz_localize(None).dt.strftime("%Y-%m-%dT%H:%M:%S").tolist()
-        payload = {
-            "title":  title,
-            "x":      x_iso,
-            "open":   df["open"].round(4).tolist(),
-            "high":   df["high"].round(4).tolist(),
-            "low":    df["low"].round(4).tolist(),
-            "close":  df["close"].round(4).tolist(),
-            "volume": df["volume"].tolist(),
-        }
-        if ext_windows:
-            payload["ext"] = ext_windows
-        return payload
-
-    @staticmethod
-    def _filter_chain_by_exp(chain: List[Dict[str, Any]], start_date: str, days_ahead: int = 60) -> List[Dict[str, Any]]:
-        if not chain:
-            return chain
-        sd = datetime.strptime(start_date, "%Y-%m-%d").date()
-        end = sd.fromordinal(sd.toordinal() + days_ahead)
-        out = []
-        for c in chain:
-          try:
-              exp = datetime.strptime(c.get("expiration_date"), "%Y-%m-%d").date()
-          except Exception:
-              continue
-          if sd <= exp <= end:
-              c = dict(c); c["dte"] = (exp - sd).days; out.append(c)
-        out.sort(key=lambda r: (r.get("dte", 9999), r.get("strike_price", 0.0)))
-        return out
-
-    @staticmethod
-    def _cap_chain(chain: List[Dict[str, Any]], max_rows: int = 40) -> List[Dict[str, Any]]:
-        if len(chain) <= max_rows:
-            return chain
-        calls = [c for c in chain if (c.get("contract_type") or "").lower() == "call"]
-        puts  = [c for c in chain if (c.get("contract_type") or "").lower() == "put"]
-        out: List[Dict[str, Any]] = []
-        i = j = 0
-        while len(out) < max_rows and (i < len(calls) or j < len(puts)):
-            if i < len(calls): out.append(calls[i]); i += 1
-            if len(out) >= max_rows: break
-            if j < len(puts): out.append(puts[j]); j += 1
-        return out
+    context = {
+        "ticker": ticker,
+        "start_date": start_date,  # type="date" espera YYYY-MM-DD
+        "end_date": end_date,
+        "bt_context_json": json.dumps(bt_ctx),  # <-- lo que lee backtest.js
+        "option_chain": [],  # rellena si ya tienes tu cadena de opciones
+    }
+    return render(request, "backtests/home.html", context)

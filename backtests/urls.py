@@ -1,8 +1,7 @@
+# backtests/urls.py
 from django.urls import path
 from . import views
 
-app_name = "backtests"
-
 urlpatterns = [
-    path("", views.HomeView.as_view(), name="home"),
+    path("", views.home, name="home"),   # <-- usa la función 'home'
 ]
