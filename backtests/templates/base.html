@@ -1,0 +1,15 @@
+{% load static %}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>OptBacktest</title>
+  <link rel="stylesheet" href="{% static 'backtests/css/site.css' %}">
+</head>
+<body class="dark">
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -1,209 +1,35 @@
 {% extends "base.html" %}
-{% block title %}OptBacktest{% endblock %}
+{% load static %}
 
 {% block content %}
-  {% if messages %}
-    {% for message in messages %}
-      <article role="alert" class="{{ message.tags }}">{{ message }}</article>
-    {% endfor %}
-  {% endif %}
+<div class="panel">
+  <div class="ttl">FILTRO: TICKER & RANGO</div>
+  <div class="row">
+    <label>Ticker</label><input id="ticker-input" type="text" value="{{ ticker }}">
+    <label>Desde</label><input id="start-date" type="date" value="{{ start_date }}">
+    <label>Hasta</label><input id="end-date" type="date" value="{{ end_date }}">
+    <button id="btnQuery">Consultar</button>
 
-  <!-- ====== CONTENEDOR ÚNICO (3 columnas: Izq[Filtro+Controles] | Centro[Órdenes rápidas] | Der[Tabs Órdenes/Trades]) ====== -->
-  <article class="combo-card">
-    <div class="combo-grid combo-grid--3">
-      <!-- ================= Col 1: Izquierda ================= -->
-      <div class="col-left stack">
-        <!-- Filtro -->
-        <section class="tool">
-          <header class="section-head">
-            <div class="section-title">Filtro: Ticker &amp; Rango</div>
-          </header>
-          <form method="get">
-            <div class="form-row">
-              <label><span>Ticker</span>{{ form.ticker }}</label>
-              <label><span>Desde</span>{{ form.start_date }}</label>
-              <label><span>Hasta</span>{{ form.end_date }}</label>
-              <button type="submit" class="btn-compact">Consultar</button>
-            </div>
-          </form>
-        </section>
+    <div class="spacer"></div>
 
-        <!-- Controles -->
-        <section class="tool">
-          <header class="section-head">
-            <div class="section-title">Controles de Backtest &amp; Estado</div>
-          </header>
+    <button id="btnStart">Inicio</button>
+    <button id="btnBack">-10m</button>
+    <button id="btnPlay">Play</button>
+    <button id="btnPause" disabled>Pausa</button>
+    <button id="btnFwd">+10m</button>
+    <label>Velocidad</label><select id="speed"><option>1</option><option>2</option><option>4</option></select>
+  </div>
+</div>
 
-          <div class="bt-controls">
-            <button id="btnStart" title="Ir al inicio">⏮ Inicio</button>
-            <button id="btnBack"  title="Retroceder 1 paso">⏪ -10m</button>
-            <button id="btnPlay"  title="Reproducir">▶ Play</button>
-            <button id="btnPause" title="Pausar" disabled>⏸ Pausa</button>
-            <button id="btnFwd"   title="Avanzar 1 paso">⏩ +10m</button>
-            <button id="btnReset" class="secondary" title="Reset de backtest (borra posiciones/órdenes)">🔁 Reset</button>
+<div class="grid">
+  <div class="panel"><div class="ttl" id="ttl-10m">{{ ticker }} · 10 MINUTOS</div><div id="chart_10m"></div></div>
+  <div class="panel"><div class="ttl" id="ttl-30m">{{ ticker }} · 30 MINUTOS (LIVE)</div><div id="chart_30m"></div></div>
+  <div class="panel"><div class="ttl" id="ttl-1d">{{ ticker }} · 1 DÍA (LIVE)</div><div id="chart_1d"></div></div>
+  <div class="panel"><div class="ttl">OPCIÓN · 10 MINUTOS</div><div id="chart_opt"></div></div>
+</div>
 
-            <label style="margin-left:.5rem;">
-              <span class="lbl">Velocidad</span>
-              <select id="speed">
-                <option value="0.5">0.5×</option>
-                <option value="1" selected>1×</option>
-                <option value="2">2×</option>
-                <option value="4">4×</option>
-              </select>
-            </label>
-          </div>
-
-          <div class="bt-status bt-status--compact">
-            <span class="pill">TZ: {{ display_tz_name }}</span>
-            <span>t=<strong id="bt-ts">—</strong></span>
-            <span>Subyacente=<strong id="bt-px">—</strong></span>
-            <span>Opción=<strong id="bt-opt">—</strong></span>
-            <span>P&amp;L=<strong id="bt-pnl" class="">0.00</strong></span>
-          </div>
-        </section>
-      </div>
-
-      <!-- ================= Col 2: Centro ================= -->
-      <div class="col-mid">
-        <section class="tool">
-          <header class="section-head">
-            <div class="section-title">Órdenes rápidas &amp; Parámetros</div>
-          </header>
-
-          <div class="row">
-            <label>
-              <span>Activo</span>
-              <select id="px-source">
-                <option value="under">Subyacente</option>
-                {% if chart_opt %}<option value="option">Opción</option>{% endif %}
-              </select>
-            </label>
-            <label>
-              <span>Cantidad</span>
-              <input type="number" id="qty" value="0" step="1" min="-999" max="999" style="width:90px;">
-            </label>
-            <button id="btnBuy">Comprar (MKT)</button>
-            <button id="btnSell">Vender (MKT)</button>
-            <button id="btnFlat" class="secondary">Cerrar</button>
-          </div>
-          <small class="muted">Nota: para opciones se usa multiplicador 100 por contrato.</small>
-
-          <div class="ops-right" style="margin-top:.35rem;">
-            <div>Posición: <strong id="pos-side">Flat</strong> | Qty: <strong id="pos-qty">0</strong> | Entrada: <strong id="pos-entry">—</strong></div>
-            <div>MTM actual: <strong id="pos-mtm">0.00</strong></div>
-            <div class="row" style="margin-top:.35rem;">
-              <label><span>Slippage (bps)</span><input id="slip-bps" type="number" value="0" step="1" min="0" style="width:90px;"></label>
-              <label><span>Comisión fija</span><input id="comm-fixed" type="number" value="0" step="0.01" min="0" style="width:110px;"></label>
-              <label><span>Comisión por unidad</span><input id="comm-perunit" type="number" value="0" step="0.01" min="0" style="width:130px;"></label>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      <!-- ================= Col 3: Derecha (Tabs Órdenes/Trades) ================= -->
-      <div class="col-right">
-        <section class="tool tabs-tool">
-          <header class="section-head">
-            <div class="section-title">Órdenes / Trades</div>
-            <div class="section-actions">
-              <button id="btnExportOrders" class="secondary btn-xs">Exportar Órdenes</button>
-              <button id="btnExportTrades" class="secondary btn-xs">Exportar Trades</button>
-            </div>
-          </header>
-
-          <nav class="tabbar" role="tablist" aria-label="Ordenes y Trades">
-            <button id="tab-orders" class="tab-btn active" role="tab" aria-selected="true" aria-controls="panel-orders">Órdenes</button>
-            <button id="tab-trades" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-trades">Trades</button>
-          </nav>
-
-          <div class="tab-panels">
-            <div id="panel-orders" class="tab-panel active" role="tabpanel" aria-labelledby="tab-orders">
-              <div class="table-scroller">
-                <table>
-                  <thead>
-                  <tr>
-                    <th>ID</th><th>TS</th><th>Side</th><th>Tipo</th><th>Precio</th><th>Qty</th><th>Activo</th><th>Estado</th><th>Fill TS</th><th>Fill Px</th><th>Acción</th>
-                  </tr>
-                  </thead>
-                  <tbody id="orders-body"></tbody>
-                </table>
-              </div>
-            </div>
-
-            <div id="panel-trades" class="tab-panel" role="tabpanel" aria-labelledby="tab-trades">
-              <div class="table-scroller">
-                <table>
-                  <thead>
-                  <tr>
-                    <th>ID</th><th>Side</th><th>Qty</th><th>Entrada TS</th><th>Entrada Px</th><th>Salida TS</th><th>Salida Px</th><th>P&amp;L</th>
-                  </tr>
-                  </thead>
-                  <tbody id="trades-body"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
-    </div>
-  </article>
-
-  {% if chart_10m or chart_30m or chart_1d %}
-  <!-- ====== Gráficos + Cadena ====== -->
-  <article class="layout">
-    <!-- Izquierda: 4 gráficos -->
-    <div>
-      <div class="grid-2">
-        <section class="panel"><div id="chart_10m" class="chart"></div></section>
-        <section class="panel"><div id="chart_30m" class="chart"></div></section>
-        <section class="panel"><div id="chart_1d" class="chart"></div></section>
-        <!-- Siempre Opciones en el panel 4 -->
-        <section class="panel"><div id="chart_opt" class="chart"></div></section>
-      </div>
-    </div>
-
-    <!-- Derecha: Cadena con scroll -->
-    <aside class="chain-container">
-      <header class="section-head chain-header">
-        <div class="section-title">Cadena de opciones</div>
-        <div class="muted">as of {{ form.cleaned_data.start_date|date:"Y-m-d" }}</div>
-      </header>
-      <div class="chain-body">
-        {% if option_chain %}
-          <table>
-            <thead>
-              <tr><th>Ticker</th><th>Tipo</th><th>Strike</th><th>Venc.</th><th>DTE</th><th>Acción</th></tr>
-            </thead>
-            <tbody>
-            {% for c in option_chain %}
-              <tr>
-                <td><code>{{ c.ticker }}</code></td>
-                <td style="text-transform:uppercase;">{{ c.contract_type }}</td>
-                <td>{{ c.strike_price }}</td>
-                <td>{{ c.expiration_date }}</td>
-                <td>{{ c.dte }}</td>
-                <td>
-                  <form method="get" style="display:inline;">
-                    <input type="hidden" name="ticker" value="{{ form.cleaned_data.ticker }}">
-                    <input type="hidden" name="start_date" value="{{ form.cleaned_data.start_date|date:'Y-m-d' }}">
-                    <input type="hidden" name="end_date" value="{{ form.cleaned_data.end_date|date:'Y-m-d' }}">
-                    <input type="hidden" name="opt" value="{{ c.ticker }}">
-                    <button type="submit" class="btn-compact-table">Graficar</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-        {% else %}
-          <p class="muted">No hay contratos disponibles en el rango seleccionado.</p>
-        {% endif %}
-      </div>
-    </aside>
-  </article>
-
-  <!-- ====== Contexto JSON para JS ====== -->
-  {{ bt_context|json_script:"bt-context" }}
-
-  {% endif %}
+<script id="bt-context" type="application/json">{{ bt_context_json|safe }}</script>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<script src="{% static 'backtests/js/optcharts.js' %}"></script>
+<script src="{% static 'backtests/js/backtest.js' %}"></script>
 {% endblock %}

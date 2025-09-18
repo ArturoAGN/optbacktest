@@ -1,0 +1,11 @@
+{
+  "tag": "safe-2025-09-18-01",
+  "commit": "SHA_CORTO_DEL_COMMIT",
+  "descripcion": "Rango 8–12 y 12–15 Sep OK; 30m y 1D live; sin gaps; rangebreaks sab/dom; zoom preservado.",
+  "fecha": "2025-09-18T12:00:00-06:00",
+  "zona_horaria": "America/Mexico_City",
+  "versiones": {
+    "django": "4.2.14",
+    "python": "3.12"
+  }
+}

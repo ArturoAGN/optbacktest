@@ -1,142 +1,155 @@
-import os
-import json
-import math
-import datetime as dt
-
-import pytz
-import requests
+import os, json, time, hashlib, random, datetime as dt
+from pathlib import Path
+import pytz, requests
 from django.conf import settings
 from django.shortcuts import render
+from django.views import View
 from django.utils.timezone import now
 
-# === Config ===
+# --- Config ---
 NY = pytz.timezone("America/New_York")
-POLYGON_KEY = os.getenv("POLYGON_API_KEY", getattr(settings, "POLYGON_API_KEY", ""))  # pon tu key en .env o settings
-
+POLYGON_KEY = os.getenv("POLYGON_API_KEY", getattr(settings, "POLYGON_API_KEY", ""))
 BASE_URL = "https://api.polygon.io"
 
+BASE_DIR = Path(getattr(settings, "BASE_DIR", Path(__file__).resolve().parents[1]))
+CACHE_DIR = BASE_DIR / "data_cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-def _iso_ny(ts_utc_ms: int) -> str:
-    """Convierte epoch-ms UTC a ISO 'YYYY-MM-DDTHH:MM' en America/New_York."""
-    ts_utc = dt.datetime.utcfromtimestamp(ts_utc_ms / 1000.0).replace(tzinfo=pytz.UTC)
-    ts_ny = ts_utc.astimezone(NY)
-    return ts_ny.strftime("%Y-%m-%dT%H:%M")
+MAX_RETRIES_429 = 2
 
+# --- Helpers ---
+def _as_iso_ny(ms_utc: int) -> str:
+    t = dt.datetime.utcfromtimestamp(ms_utc/1000).replace(tzinfo=pytz.UTC).astimezone(NY)
+    return t.strftime("%Y-%m-%dT%H:%M")
 
-def _aggs_polygon(ticker: str, multiplier: int, timespan: str, date_from: str, date_to: str):
-    """
-    Llama a Polygon v2/aggs. Devuelve lista de dicts normalizados.
-    timespan: 'minute' | 'hour' | 'day'
-    """
+def _cache_file(ticker: str, mult: int, span: str, dfrom: str, dto: str) -> Path:
+    h = hashlib.md5(f"{ticker}|{mult}|{span}|{dfrom}|{dto}".encode()).hexdigest()
+    return CACHE_DIR / f"aggs_{h}.json"
+
+def _http_get_backoff(url: str, params: dict):
+    tries = 0
+    while True:
+        tries += 1
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code == 429 and tries <= MAX_RETRIES_429:
+            wait_s = 1.2
+            ra = r.headers.get("Retry-After")
+            if ra:
+                try: wait_s = max(wait_s, float(ra))
+                except: pass
+            time.sleep(wait_s)
+            continue
+        r.raise_for_status()
+        return r
+
+def _aggs_polygon(ticker: str, mult: int, span: str, dfrom: str, dto: str):
     if not POLYGON_KEY:
-        raise RuntimeError("Falta POLYGON_API_KEY")
+        raise RuntimeError("Falta POLYGON_API_KEY (usaremos dummy)")
 
-    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{date_from}/{date_to}"
-    params = {
-        "adjusted": "true",
-        "sort": "asc",
-        "limit": 50000,
-        "apiKey": POLYGON_KEY,
-    }
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    results = data.get("results", [])
-    out = []
-    for it in results:
-        out.append(
-            {
-                "x": _iso_ny(it["t"]),
-                "o": float(it["o"]),
-                "h": float(it["h"]),
-                "l": float(it["l"]),
-                "c": float(it["c"]),
-                "v": float(it.get("v", 0)),
-            }
-        )
-    return out
+    cache = _cache_file(ticker, mult, span, dfrom, dto)
+    if cache.exists():
+        data = json.loads(cache.read_text(encoding="utf-8"))
+    else:
+        url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/{mult}/{span}/{dfrom}/{dto}"
+        params = {"adjusted":"true","sort":"asc","limit":50000,"apiKey":POLYGON_KEY}
+        j = _http_get_backoff(url, params).json()
+        out = j.get("results", []) or []
+        nxt = j.get("next_url")
+        while nxt:
+            jn = _http_get_backoff(nxt, {"apiKey":POLYGON_KEY}).json()
+            out.extend(jn.get("results", []) or [])
+            nxt = jn.get("next_url")
+        data = {"results": out}
+        try: cache.write_text(json.dumps(data), encoding="utf-8")
+        except: pass
 
+    bars=[]
+    for it in data.get("results", []) or []:
+        bars.append({"x":_as_iso_ny(it["t"]), "o":float(it["o"]), "h":float(it["h"]),
+                     "l":float(it["l"]), "c":float(it["c"]), "v":float(it.get("v",0))})
+    return bars
 
 def _to_series(bars, title: str):
-    """Convierte lista de barras a estructura usada por Plotly en el front."""
-    return {
-        "title": title,
-        "x": [b["x"] for b in bars],
-        "open": [b["o"] for b in bars],
-        "high": [b["h"] for b in bars],
-        "low": [b["l"] for b in bars],
-        "close": [b["c"] for b in bars],
-        "volume": [b["v"] for b in bars],
-    }
+    return {"title": title,
+            "x":[b["x"] for b in bars], "open":[b["o"] for b in bars],
+            "high":[b["h"] for b in bars], "low":[b["l"] for b in bars],
+            "close":[b["c"] for b in bars], "volume":[b["v"] for b in bars]}
 
-
-def _dummy_series(start_dt: dt.datetime, n: int, step_min: int, title: str):
-    """Serie sintética (fallback) para que la UI nunca quede vacía si falla la API."""
-    xs, o, h, l, c, v = [], [], [], [], [], []
-    cur = start_dt.astimezone(NY)
-    px = 100.0
-    for i in range(n):
+def _dummy_series(start_dt: dt.datetime, n: int, step_min: int, title: str, base_px: float = 240.0):
+    xs,o,h,l,c,v=[],[],[],[],[],[]
+    cur = start_dt.astimezone(NY); random.seed(int(start_dt.timestamp()))
+    px = base_px; k = 0.02; sigma = 0.25
+    for _ in range(n):
         xs.append(cur.strftime("%Y-%m-%dT%H:%M"))
-        drift = math.sin(i / 8.0) * 0.8
-        rng = abs(math.cos(i / 5.0)) * 0.6 + 0.2
-        op = px + drift
-        hi = op + rng
-        lo = op - rng
-        cl = op + (rng * 0.4 - rng * 0.2)
-        vol = 1_000 + (i % 10) * 300
-        o.append(round(op, 2))
-        h.append(round(hi, 2))
-        l.append(round(lo, 2))
-        c.append(round(cl, 2))
-        v.append(vol)
-        px = cl
-        cur = cur + dt.timedelta(minutes=step_min)
-    return {"title": title, "x": xs, "open": o, "high": h, "low": l, "close": c, "volume": v}
+        shock = random.gauss(0.0, sigma); nx = px + shock + k*(base_px - px)
+        hi = max(px,nx) + abs(random.gauss(0, sigma*0.6))
+        lo = min(px,nx) - abs(random.gauss(0, sigma*0.6))
+        hour = cur.hour
+        vf = 0.6
+        if 9 <= hour <= 10: vf = 1.2
+        elif 15 <= hour <= 16: vf = 1.0
+        vol = int(1_000_000*vf*max(0.2, 1+random.gauss(0,0.15)))
+        o.append(round(px,2)); h.append(round(hi,2)); l.append(round(lo,2)); c.append(round(nx,2)); v.append(vol)
+        px = nx; cur += dt.timedelta(minutes=step_min)
+    return {"title":title,"x":xs,"open":o,"high":h,"low":l,"close":c,"volume":v}
 
-
+# --- Vista principal ---
 def home(request):
-    # --- Rango por defecto: del 1er día del mes actual (NY) a hoy (NY) ---
-    today_ny = now().astimezone(NY).date()
-    first_day = today_ny.replace(day=1)
+    """
+    - 10m: pedimos hasta end_date + 3 días para cubrir el último día (04:00–20:00).
+    - 1d : entregamos histórico (para 100 velas) y el front lo fusiona con el 1d "live".
+    - 30m: live desde 10m (sin histórico).
+    """
+    today = now().astimezone(NY).date()
+    first = today.replace(day=1)
 
-    # Permitir override desde querystring si lo deseas
     ticker = (request.GET.get("ticker") or "AAPL").upper()
-    start_date = request.GET.get("start") or first_day.strftime("%Y-%m-%d")
-    end_date = request.GET.get("end") or today_ny.strftime("%Y-%m-%d")
+    start_date = request.GET.get("start") or first.strftime("%Y-%m-%d")
+    end_date   = request.GET.get("end")   or today.strftime("%Y-%m-%d")
 
-    # --- Cargar barras 10m desde Polygon (o dummy si hay error/429) ---
-    ch10 = None
+    try: sd = dt.date.fromisoformat(start_date)
+    except: sd = first
+    try: ed = dt.date.fromisoformat(end_date)
+    except: ed = today
+
+    d_from = sd.strftime("%Y-%m-%d")
+    d_to_plus = (ed + dt.timedelta(days=3)).strftime("%Y-%m-%d")  # <- más margen
+
+    # 10m (base para 30m y 1d live)
     try:
-        bars10 = _aggs_polygon(ticker, 10, "minute", start_date, end_date)
-        ch10 = _to_series(bars10, f"{ticker} · 10 minutos")
+        ch10 = _to_series(_aggs_polygon(ticker, 10, "minute", d_from, d_to_plus), f"{ticker} · 10 minutos")
     except Exception as e:
-        # Fallback (para no romper la UI). También útil en desarrollo sin API.
-        start_dt = dt.datetime.combine(first_day, dt.time(9, 30, tzinfo=NY))
-        ch10 = _dummy_series(start_dt, n=120, step_min=10, title=f"{ticker} · 10 minutos")
-        # Si quieres ver el error en templates/logs:
-        print("WARN: usando dummy 10m por error:", repr(e))
+        print("WARN 10m:", repr(e))
+        days = max(1, (ed - sd).days + 3)
+        n = days * 96  # 16h/día * 6 barras/hora
+        start_dt = dt.datetime.combine(sd, dt.time(4,0, tzinfo=NY))
+        ch10 = _dummy_series(start_dt, n, 10, f"{ticker} · 10 minutos", 240.0)
 
-    # Puedes traer 30m/1D de Polygon si lo necesitas, pero la UI los reconstruye en vivo desde 10m.
-    # ch30 y ch1d se dejan en None para no duplicar datos.
-    ch30 = None
-    ch1d = None
-
-    # Panel de opción (lo dejamos vacío por ahora; cuando selecciones una de la cadena, lo llenamos)
-    chopt = None
+    # 1d histórico (para prefijar hasta 100 velas previas a play_from)
+    try:
+        d1_from = (sd - dt.timedelta(days=220)).strftime("%Y-%m-%d")
+        d1_to   = d_to_plus
+        ch1d_hist = _to_series(_aggs_polygon(ticker, 1, "day", d1_from, d1_to), f"{ticker} · 1 día (hist)")
+    except Exception as e:
+        print("WARN 1d hist:", repr(e))
+        # 150 días dummy
+        start_dt = dt.datetime.combine(ed - dt.timedelta(days=150), dt.time(9,30,tzinfo=NY))
+        ch1d_hist = _dummy_series(start_dt, 150, 60*24, f"{ticker} · 1 día (hist)", 240.0)
 
     bt_ctx = {
-        "rb_hours": [20, 4],  # cierra hueco 20:00→04:00 (sin gaps entre AH y pre)
-        "ch10": ch10,
-        "ch30": ch30,
-        "ch1d": ch1d,
-        "chopt": chopt,
+        "rb_hours": [20, 4],                  # oculto nocturno 20:00→04:00
+        "ch10": ch10,                         # 10m (base live)
+        "ch1d_hist": ch1d_hist,               # 1d histórico
+        "play_from": f"{sd.strftime('%Y-%m-%d')}T00:00",
     }
 
-    context = {
+    return render(request, "backtests/home.html", {
         "ticker": ticker,
-        "start_date": start_date,  # type="date" espera YYYY-MM-DD
-        "end_date": end_date,
-        "bt_context_json": json.dumps(bt_ctx),  # <-- lo que lee backtest.js
-        "option_chain": [],  # rellena si ya tienes tu cadena de opciones
-    }
-    return render(request, "backtests/home.html", context)
+        "start_date": sd.strftime("%Y-%m-%d"),
+        "end_date": ed.strftime("%Y-%m-%d"),
+        "bt_context_json": json.dumps(bt_ctx),
+    })
+
+class HomeView(View):
+    def get(self, request, *args, **kwargs):
+        return home(request)
